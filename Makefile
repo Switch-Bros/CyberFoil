@@ -61,6 +61,9 @@ ROMFS		:=	romfs
 # options for code generation
 #---------------------------------------------------------------------------------
 DEFINES	+=	-DAPP_VERSION=\"$(APP_VERSION)\"
+ifneq ($(strip $(HAUTH_SEED_OBF_HEX)),)
+DEFINES += -DHAUTH_SEED_OBF_HEX=\"$(HAUTH_SEED_OBF_HEX)\"
+endif
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \

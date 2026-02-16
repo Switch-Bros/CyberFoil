@@ -20,6 +20,7 @@
 
 #include "util/config.hpp"
 #include "util/curl.hpp"
+#include "util/hauth.hpp"
 #include "util/json.hpp"
 #include "util/lang.hpp"
 #include "util/title_util.hpp"
@@ -536,7 +537,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildShopHeaders()
+    std::vector<std::string> BuildShopHeaders(const std::string& requestUrl)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -545,13 +546,14 @@ namespace {
         std::string versionHeader = "Version: " + versionValue;
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
+        std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
         return {
             themeHeader,
             "UID: 0000000000000000000000000000000000000000000000000000000000000000",
             versionHeader,
             revisionHeader,
             languageHeader,
-            "HAUTH: 0",
+            hauthHeader,
             "UAUTH: 0"
         };
     }
@@ -584,7 +586,7 @@ namespace {
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildShopHeaders();
+        const auto headers = BuildShopHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -651,7 +653,7 @@ namespace {
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildShopHeaders();
+        const auto headers = BuildShopHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -788,7 +790,7 @@ namespace {
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildShopHeaders();
+        const auto headers = BuildShopHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)

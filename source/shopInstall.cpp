@@ -25,6 +25,7 @@
 #include "util/config.hpp"
 #include "util/curl.hpp"
 #include "util/error.hpp"
+#include "util/hauth.hpp"
 #include "util/json.hpp"
 #include "util/lang.hpp"
 #include "util/network_util.hpp"
@@ -127,7 +128,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildTinfoilHeaders()
+    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -136,13 +137,14 @@ namespace {
         std::string versionHeader = "Version: " + versionValue;
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
+        std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
         return {
             themeHeader,
             "UID: 0000000000000000000000000000000000000000000000000000000000000000",
             versionHeader,
             revisionHeader,
             languageHeader,
-            "HAUTH: 0",
+            hauthHeader,
             "UAUTH: 0"
         };
     }
@@ -974,7 +976,7 @@ namespace shopInstStuff {
         }
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildTinfoilHeaders();
+        const auto headers = BuildTinfoilHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)

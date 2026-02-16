@@ -14,6 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAUTH_SEED: ${{ secrets.HAUTH_SEED }}
 
     container:
       image: devkitpro/devkita64:20251231
@@ -31,7 +33,21 @@ jobs:
           set -euo pipefail
           start_ts=$(date +%s)
           dkp-pacman -S --noconfirm --needed switch-ntfs-3g switch-lwext4
-          make -j"$(nproc)"
+          if [ -n "${HAUTH_SEED:-}" ]; then
+            HAUTH_SEED_OBF_HEX="$(python3 - <<'PY'
+import os
+s = os.environ.get("HAUTH_SEED", "").strip()
+encoded = []
+for i, b in enumerate(s.encode("utf-8")):
+    mask = (0xA7 + ((i * 37) + 0x5C)) & 0xFF
+    encoded.append(f"{(b ^ mask):02x}")
+print("".join(encoded))
+PY
+)"
+            make -j"$(nproc)" HAUTH_SEED_OBF_HEX="$HAUTH_SEED_OBF_HEX"
+          else
+            make -j"$(nproc)"
+          fi
 
           end_ts=$(date +%s)
           duration=$((end_ts - start_ts))
