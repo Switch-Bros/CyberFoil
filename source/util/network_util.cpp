@@ -102,7 +102,7 @@ namespace tin::network
         curl_easy_setopt(curl, CURLOPT_URL, m_url.c_str());
         curl_easy_setopt(curl, CURLOPT_NOBODY, true);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, false);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, this);
         curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, &tin::network::HTTPHeader::ParseHTMLHeader);
         std::string authValue;
@@ -160,7 +160,7 @@ namespace tin::network
             curl_easy_setopt(curl, CURLOPT_URL, m_url.c_str());
             curl_easy_setopt(curl, CURLOPT_NOBODY, true);
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, false);
-            curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
             curl_easy_setopt(curl, CURLOPT_RANGE, "0-0");
             std::string authValue;
             ApplyBasicAuth(curl, authValue);
@@ -236,7 +236,7 @@ namespace tin::network
 
         curl_easy_setopt(curl, CURLOPT_URL, m_url.c_str());
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, false);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeDataFunc);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &tin::network::HTTPDownload::ParseHTMLData);
@@ -322,7 +322,7 @@ namespace tin::network
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DROP");
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, false);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 50); 
 
