@@ -3,7 +3,7 @@
 ![GitHub latest release downloads](https://img.shields.io/github/downloads/luketanti/CyberFoil/latest/total)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/gGy7hWxJeP)
 
-## Version: 1.4.0
+## Version: 1.4.1
 
 ## Buy me a Coffee at kofi -> https://ko-fi.com/cyberhazard
 
@@ -19,7 +19,6 @@ A NSP, NSZ, XCI, & XCZ Installer with basic eShop support for Nintendo Switch
 - Installs NSP/NSZ/XCI/XCZ files over the internet by URL or Google Drive
 - Installs NSP/NSZ/XCI/XCZ files over MTP (USB file transfer)
 - Verifies NCAs by header signature before they're installed
-- Installs and manages the latest signature patches quickly and easily
 - Built-in eShop with sections, search, and cover art previews
 - Save Sync in eShop: browse console/server saves, upload with notes, download specific backup versions, and delete server backups
 - OLED mode for pure-black backgrounds
@@ -86,6 +85,15 @@ Offline metadata/icons (no online lookups):
 - Offline DB updater debug log is written to: `sdmc:/switch/CyberFoil/offline_db_update.log`.
 
 
+New in 1.4.1:
+- Added one-press **Backup save data** upload for all save data.
+- Backup flow now creates a note before upload and shows clearer progress/loading states.
+- Backup dialogs now show the destination shop name and improved user picking (nickname-focused).
+- Added Shop setting to show only base titles in the **All** section.
+- Added low-latency navigation click sound (`click.wav`) for list/grid/menu movement.
+- Main menu grid labels now wrap better for longer localized text.
+- Localized backup/shop additions across all locale files.
+
 New in 1.4.0:
 - Added Offline DB binary runtime support (`titles.pack` + `icons.pack`) so title metadata/icons can be used locally without online lookups.
 - Added Offline DB updater with manifest validation (size + sha256) and atomic replace/rollback behavior.
@@ -119,7 +127,7 @@ Screenshots:
 ## Settings Notes
 - OLED mode uses pure-black UI backgrounds. Toggle in Settings.
 - "Remove anime" hides the mascot art.
-- Sounds can be disabled in Settings. You can override sounds by placing `success.wav` and `bark.wav` in `sdmc:/switch/CyberFoil/`.
+- Sounds can be disabled in Settings. You can override sounds by placing `click.wav`, `success.wav`, and `bark.wav` in `sdmc:/switch/CyberFoil/`.
 - MTP setting: you can enable/disable exposing the Album drive while MTP install mode is running.
 - Shop icon cache is stored in `sdmc:/switch/CyberFoil/shop_icons/`.
 - Touch input: tap items in the main menu and settings to select.
@@ -127,7 +135,6 @@ Screenshots:
 ## To Do
 - Improve search and navigation for large libraries (Planned)
  - Improve MTP robustness and host compatibility
-- Add support for switching between multiple shops
 - Preload title images and banners to cache for a faster UI experience
 - Create a beginner-friendly video tutorial for the complete setup (CyberFoil and shop backend)
 

@@ -213,6 +213,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        inst::util::playNavigationClickIfNeeded(Down);
         if (Down & HidNpadButton_B) {
             if (this->menu->GetItems().size() > 0){
                 if (this->selectedUrls.size() == 0) {

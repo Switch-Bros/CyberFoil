@@ -11,7 +11,9 @@
 #include "util/curl.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
+#include "util/hauth.hpp"
 #include "util/lang.hpp"
+#include "util/uid.hpp"
 #include "ui/instPage.hpp"
 
 static size_t writeDataFile(void *ptr, size_t size, size_t nmemb, void *stream) {
@@ -75,7 +77,7 @@ static void buildVersionAndRevision(std::string& outVersion, std::string& outRev
         outRevision = revisionToken.substr(0, digitsEnd);
 }
 
-static std::vector<std::string> buildShopHeaders()
+static std::vector<std::string> buildShopHeaders(const std::string& requestUrl)
 {
     std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
     std::string versionValue;
@@ -84,13 +86,15 @@ static std::vector<std::string> buildShopHeaders()
     std::string versionHeader = "Version: " + versionValue;
     std::string revisionHeader = "Revision: " + revisionValue;
     std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
+    std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
+    std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
     return {
         themeHeader,
-        "UID: 0000000000000000000000000000000000000000000000000000000000000000",
+        uidHeader,
         versionHeader,
         revisionHeader,
         languageHeader,
-        "HAUTH: 0",
+        hauthHeader,
         "UAUTH: 0"
     };
 }
@@ -297,7 +301,7 @@ namespace inst::curl {
         curl_easy_setopt(curl_handle, CURLOPT_FAILONERROR, 1L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = buildShopHeaders();
+        const auto headers = buildShopHeaders(ourUrl);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -353,7 +357,7 @@ namespace inst::curl {
         curl_easy_setopt(curl_handle, CURLOPT_FAILONERROR, 1L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = buildShopHeaders();
+        const auto headers = buildShopHeaders(ourUrl);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)

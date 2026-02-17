@@ -2577,6 +2577,16 @@ namespace inst::ui {
             this->visibleItems = items;
         }
 
+        if (this->isAllSection() && inst::config::shopAllBaseOnly) {
+            std::vector<shopInstStuff::ShopItem> baseOnlyItems;
+            baseOnlyItems.reserve(this->visibleItems.size());
+            for (const auto& item : this->visibleItems) {
+                if (IsBaseItem(item))
+                    baseOnlyItems.push_back(item);
+            }
+            this->visibleItems = std::move(baseOnlyItems);
+        }
+
         if (!this->shopSections.empty() && this->selectedSectionIndex >= 0 && this->selectedSectionIndex < static_cast<int>(this->shopSections.size()) && this->visibleItems.empty()) {
             const auto &section = this->shopSections[this->selectedSectionIndex];
             if (section.id == "updates" || section.id == "dlc") {
@@ -3458,6 +3468,12 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        const u64 verticalNavDownMask = HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
+        u64 clickDown = Down;
+        if (!this->shopGridMode) {
+            clickDown &= ~verticalNavDownMask;
+        }
+        inst::util::playNavigationClickIfNeeded(clickDown);
         if (this->descriptionOverlayVisible) {
             if (Down & (HidNpadButton_B | HidNpadButton_ZL)) {
                 this->closeDescriptionOverlay();
@@ -3891,6 +3907,9 @@ namespace inst::ui {
             const int currentSelectedIndex = this->menu->GetSelectedIndex();
             if (currentSelectedIndex != this->listRenderedSelectedIndex && !this->menu->GetItems().empty()) {
                 this->listRenderedSelectedIndex = currentSelectedIndex;
+                if ((Down & verticalNavDownMask) == 0) {
+                    inst::util::playNavigationClick();
+                }
             }
             this->updatePreview();
             this->updateShopGrid();

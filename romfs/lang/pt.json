@@ -7,6 +7,7 @@
             "shop": "Instalar a partir do eShop",
             "usb": "Instalar a partir do NS-USBloader",
             "mtp": "Instalar a partir do MTP",
+            "backup": "Fazer backup dos dados salvos",
             "sig": "Gerir patches de assinaturas",
             "set": "Definições",
             "exit": "Sair"
@@ -45,6 +46,7 @@
             "net": "Instale ficheiros a partir de fontes LAN ou internet.",
             "sig": "Instale, atualize ou remova os signature patches.",
             "set": "Altere as preferências do CyberFoil e as definições da loja.",
+            "backup": "Faz backup de todos os dados salvos locais do usuario selecionado para o servidor da loja configurado em uma unica acao.\n\nComo funciona:\n1. Se houver varios usuarios, escolha primeiro a conta para backup.\n2. Se nenhuma loja estiver configurada, o CyberFoil tenta perfis salvos e depois solicita uma URL de loja.\n3. Insira uma nota de backup (obrigatoria).\n4. O CyberFoil analisa os saves locais desse usuario e envia cada um ao servidor.\n5. O progresso e exibido durante a analise e o envio.\n6. Um resumo final mostra sucessos e falhas.",
             "exit": "Feche o CyberFoil e volte ao menu HOME."
         }
     },
@@ -222,6 +224,7 @@
             "shop_pass": "Palavra-passe eShop: ",
             "shop_hide_installed": "Ocultar títulos instalados na eShop",
             "shop_hide_installed_section": "Ocultar a se\u00e7\u00e3o Instalados na eShop",
+            "shop_all_base_only": "Mostrar apenas títulos base na seção Todos",
             "shop_start_grid_mode": "Iniciar a loja no modo grelha",
             "shop_reset_icons": "Repor a cache dos ícones da loja",
             "language": "Idioma: ",
@@ -282,3 +285,9 @@
         "cancel_desc": "Pressione B para cancelar"
     }
 }
+
+
+
+
+
+

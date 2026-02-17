@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.1
+- Add one-press **Backup save data** flow to upload all save data to server.
+- Create and use a backup note before bulk save uploads.
+- Improve backup UX with shop target display, status/loading states, and better user selection UI.
+- Support nickname-only user selection in backup dialogs.
+- Add optional filter in Shop settings to show only base titles in the **All** section.
+- Add low-latency navigation click sound (`click.wav`) across menu/list/grid navigation.
+- Improve held up/down behavior in Shop list so click sound plays on each repeated item move.
+- Wrap main menu grid text to prevent localization overflow on long labels.
+- Localize backup menu/info strings and shop base-only setting across all locale files.
+
 ## 1.3.11
 - Improve MTP install reliability across repeated sessions.
 - Play success sound when MTP install completes.

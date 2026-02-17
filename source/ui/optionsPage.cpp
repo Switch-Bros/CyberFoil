@@ -285,6 +285,7 @@ namespace inst::ui {
             addItem("Add new shop", false, false);
             addItem("options.menu_items.shop_hide_installed"_lang, true, inst::config::shopHideInstalled);
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
+            addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
             addItem("options.menu_items.shop_start_grid_mode"_lang, true, inst::config::shopStartGridMode);
             addItem("options.menu_items.shop_reset_icons"_lang, false, false);
             addItem("Offline DB auto-check on startup", true, inst::config::offlineDbAutoCheckOnStartup);
@@ -292,7 +293,6 @@ namespace inst::ui {
             return;
         }
 
-        addItem("options.menu_items.sig_url"_lang + inst::util::shortenString(inst::config::sigPatchesUrl, 42, false), false, false);
         addItem("options.menu_items.auto_update"_lang, true, inst::config::autoUpdate);
         addItem("options.menu_items.gay_option"_lang, true, inst::config::gayMode);
         addItem("options.menu_items.language"_lang + this->getMenuLanguage(inst::config::languageSetting), false, false);
@@ -387,6 +387,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        inst::util::playNavigationClickIfNeeded(Down);
         if (Down & HidNpadButton_B) {
             mainApp->LoadLayout(mainApp->mainPage);
         }
@@ -489,11 +490,11 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 12, 13, 19, 14, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 12, 13, 24, 19, 14, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
-                static const int kSystemMap[] = {15, 4, 5, 16, 17, 18};
+                static const int kSystemMap[] = {4, 5, 16, 17, 18};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kSystemMap) / sizeof(kSystemMap[0])))) return;
                 selectedIndex = kSystemMap[selectedIndex];
             }
@@ -878,6 +879,11 @@ namespace inst::ui {
                     inst::config::setConfig();
                     this->refreshOptions();
                     break;
+                case 24:
+                    inst::config::shopAllBaseOnly = !inst::config::shopAllBaseOnly;
+                    inst::config::setConfig();
+                    this->refreshOptions();
+                    break;
                 case 14:
                     if (!inst::config::shopUrl.empty()) {
                         int confirm = inst::ui::mainApp->CreateShowDialog("options.cache_reset.title"_lang, "options.cache_reset.desc"_lang, {"options.cache_reset.confirm"_lang, "common.cancel"_lang}, false);
@@ -954,14 +960,6 @@ namespace inst::ui {
                     inst::config::shopStartGridMode = !inst::config::shopStartGridMode;
                     inst::config::setConfig();
                     this->refreshOptions();
-                    break;
-                case 15:
-                    keyboardResult = inst::util::softwareKeyboard("options.sig_hint"_lang, inst::config::sigPatchesUrl.c_str(), 500);
-                    if (keyboardResult.size() > 0) {
-                        inst::config::sigPatchesUrl = keyboardResult;
-                        inst::config::setConfig();
-                        this->refreshOptions();
-                    }
                     break;
                 case 16:
                     languageList = languageStrings;

@@ -187,6 +187,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        inst::util::playNavigationClickIfNeeded(Down);
 
         if (!Pos.IsEmpty()) {
             if (!this->touchTapActive) {

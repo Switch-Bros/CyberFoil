@@ -20,9 +20,11 @@
 
 #include "util/config.hpp"
 #include "util/curl.hpp"
+#include "util/hauth.hpp"
 #include "util/json.hpp"
 #include "util/lang.hpp"
 #include "util/title_util.hpp"
+#include "util/uid.hpp"
 #include "util/util.hpp"
 
 namespace {
@@ -220,6 +222,16 @@ namespace {
         accountExit();
         error = "No valid user account found for save-data access.";
         return false;
+    }
+
+    bool ResolveRequestedOrActiveUser(const AccountUid* requestedUid, AccountUid& outUid, std::string& error)
+    {
+        error.clear();
+        if (requestedUid && accountUidIsValid(requestedUid)) {
+            outUid = *requestedUid;
+            return true;
+        }
+        return ResolveActiveUser(outUid, error);
     }
 
     bool EnumerateLocalSaves(const AccountUid& uid, std::unordered_map<std::uint64_t, inst::save_sync::SaveSyncEntry>& entries, std::string& warning)
@@ -536,7 +548,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildShopHeaders()
+    std::vector<std::string> BuildShopHeaders(const std::string& requestUrl)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -545,13 +557,15 @@ namespace {
         std::string versionHeader = "Version: " + versionValue;
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
+        std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
+        std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
         return {
             themeHeader,
-            "UID: 0000000000000000000000000000000000000000000000000000000000000000",
+            uidHeader,
             versionHeader,
             revisionHeader,
             languageHeader,
-            "HAUTH: 0",
+            hauthHeader,
             "UAUTH: 0"
         };
     }
@@ -577,14 +591,14 @@ namespace {
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &outBody);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildShopHeaders();
+        const auto headers = BuildShopHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -644,14 +658,14 @@ namespace {
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &outBody);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 20000L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildShopHeaders();
+        const auto headers = BuildShopHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -781,14 +795,14 @@ namespace {
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 60000L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildShopHeaders();
+        const auto headers = BuildShopHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -986,18 +1000,18 @@ namespace inst::save_sync {
         return true;
     }
 
-    bool BuildEntries(const std::vector<shopInstStuff::ShopItem>& remoteItems, std::vector<SaveSyncEntry>& outEntries, std::string& warning)
+    bool BuildEntriesForUser(const std::vector<shopInstStuff::ShopItem>& remoteItems, const AccountUid* uid, std::vector<SaveSyncEntry>& outEntries, std::string& warning)
     {
         warning.clear();
         outEntries.clear();
 
         std::unordered_map<std::uint64_t, SaveSyncEntry> entriesByTitleId;
 
-        AccountUid uid = {};
+        AccountUid targetUid = {};
         std::string userError;
-        if (ResolveActiveUser(uid, userError)) {
+        if (ResolveRequestedOrActiveUser(uid, targetUid, userError)) {
             std::string localWarning;
-            EnumerateLocalSaves(uid, entriesByTitleId, localWarning);
+            EnumerateLocalSaves(targetUid, entriesByTitleId, localWarning);
             if (!localWarning.empty())
                 warning = localWarning;
         } else {
@@ -1067,7 +1081,12 @@ namespace inst::save_sync {
         return true;
     }
 
-    bool UploadSaveToServer(const std::string& shopUrl, const std::string& user, const std::string& pass, const SaveSyncEntry& entry, const std::string& note, std::string& error)
+    bool BuildEntries(const std::vector<shopInstStuff::ShopItem>& remoteItems, std::vector<SaveSyncEntry>& outEntries, std::string& warning)
+    {
+        return BuildEntriesForUser(remoteItems, nullptr, outEntries, warning);
+    }
+
+    bool UploadSaveToServerForUser(const std::string& shopUrl, const std::string& user, const std::string& pass, const AccountUid* uid, const SaveSyncEntry& entry, const std::string& note, std::string& error)
     {
         error.clear();
         if (entry.titleId == 0) {
@@ -1079,8 +1098,8 @@ namespace inst::save_sync {
             return false;
         }
 
-        AccountUid uid = {};
-        if (!ResolveActiveUser(uid, error))
+        AccountUid targetUid = {};
+        if (!ResolveRequestedOrActiveUser(uid, targetUid, error))
             return false;
 
         const std::string tempRoot = inst::config::appDir + "/save_sync_tmp";
@@ -1091,7 +1110,7 @@ namespace inst::save_sync {
 
         const std::string mountedPath = std::string(kSaveMountName) + ":/";
 
-        if (!MountSaveDataForTitle(uid, entry.titleId, true, error))
+        if (!MountSaveDataForTitle(targetUid, entry.titleId, true, error))
             return false;
 
         if (!CreateZipFromDirectory(mountedPath, archivePath, error)) {
@@ -1112,6 +1131,11 @@ namespace inst::save_sync {
 
         std::filesystem::remove_all(tempRoot, ec);
         return true;
+    }
+
+    bool UploadSaveToServer(const std::string& shopUrl, const std::string& user, const std::string& pass, const SaveSyncEntry& entry, const std::string& note, std::string& error)
+    {
+        return UploadSaveToServerForUser(shopUrl, user, pass, nullptr, entry, note, error);
     }
 
     bool DownloadSaveToConsole(const std::string& shopUrl, const std::string& user, const std::string& pass, const SaveSyncEntry& entry, const SaveSyncRemoteVersion* remoteVersion, std::string& error)

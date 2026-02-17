@@ -15,7 +15,7 @@ namespace inst::ui {
             void usbInstallMenuItem_Click();
             void hddInstallMenuItem_Click();
             void mtpInstallMenuItem_Click();
-            void sigPatchesMenuItem_Click();
+            void backupSaveDataMenuItem_Click();
             void settingsMenuItem_Click();
             void exitMenuItem_Click();
             void onInput(u64 Down, u64 Up, u64 Held, pu::ui::Touch Pos);
@@ -51,6 +51,9 @@ namespace inst::ui {
             TextBlock::Ref butText;
             Rectangle::Ref topRect;
             Rectangle::Ref botRect;
+            Rectangle::Ref backupUserPickerRect;
+            TextBlock::Ref backupUserPickerTitle;
+            TextBlock::Ref backupUserPickerHint;
             pu::ui::elm::Menu::Ref optionMenu;
             pu::ui::elm::MenuItem::Ref installMenuItem;
             pu::ui::elm::MenuItem::Ref netInstallMenuItem;
@@ -58,7 +61,7 @@ namespace inst::ui {
             pu::ui::elm::MenuItem::Ref usbInstallMenuItem;
             pu::ui::elm::MenuItem::Ref hddInstallMenuItem;
             pu::ui::elm::MenuItem::Ref mtpInstallMenuItem;
-            pu::ui::elm::MenuItem::Ref sigPatchesMenuItem;
+            pu::ui::elm::MenuItem::Ref backupSaveDataMenuItem;
             pu::ui::elm::MenuItem::Ref settingsMenuItem;
             pu::ui::elm::MenuItem::Ref exitMenuItem;
             std::vector<Rectangle::Ref> mainGridTiles;
@@ -68,6 +71,8 @@ namespace inst::ui {
             int selectedMainIndex = 0;
             void updateMainGridSelection();
             int getMainGridIndexFromTouch(int x, int y) const;
+            int promptBackupUserSelection(const std::vector<std::string>& userLabels, int preferredIndex);
+            void setBackupUserPickerVisible(bool visible);
             void activateSelectedMainItem();
             void showSelectedMainInfo();
     };

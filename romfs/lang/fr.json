@@ -7,6 +7,7 @@
             "shop": "Installer depuis eShop",
             "usb": "Installer via NS-USBloader",
             "mtp": "Installer via MTP",
+            "backup": "Sauvegarder les donnees de sauvegarde",
             "sig": "Gérer les sigpatches",
             "set": " Paramètres",
             "exit": " Quitter"
@@ -45,6 +46,7 @@
             "net": "Installez des fichiers depuis le LAN ou des sources internet.",
             "sig": "Installez, mettez à jour ou supprimez les signature patches.",
             "set": "Modifiez les préférences CyberFoil et les paramètres de la boutique.",
+            "backup": "Sauvegarde en une seule action toutes les donnees de sauvegarde locales de l'utilisateur selectionne vers votre serveur eShop configure.\n\nFonctionnement :\n1. Si plusieurs utilisateurs existent, choisissez d'abord le compte a sauvegarder.\n2. Si aucun shop n'est configure, CyberFoil essaie les profils enregistres puis demande une URL de shop.\n3. Saisissez une note de sauvegarde (obligatoire).\n4. CyberFoil analyse les sauvegardes locales de cet utilisateur et envoie chaque element au serveur.\n5. Une progression est affichee pendant l'analyse et l'envoi.\n6. Un resume final indique les succes et les echecs.",
             "exit": "Fermez CyberFoil et retournez au menu HOME."
         }
     },
@@ -222,6 +224,7 @@
             "shop_pass": "Mot de passe eShop: ",
             "shop_hide_installed": "Masquer les titres installés dans l’eShop",
             "shop_hide_installed_section": "Masquer la section Install\u00e9s dans l\u2019eShop",
+            "shop_all_base_only": "Afficher uniquement les titres de base dans la section Tous",
             "shop_start_grid_mode": "Démarrer la boutique en mode grille",
             "shop_reset_icons": "Réinitialiser le cache des icônes de la boutique",
             "language": "Langage: ",
@@ -282,3 +285,9 @@
         "cancel_desc": "Appuyez sur B pour annuler"
     }
 }
+
+
+
+
+
+

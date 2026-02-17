@@ -9,9 +9,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAUTH_SEED: ${{ secrets.HAUTH_SEED }}
 
     container:
-      image: devkitpro/devkita64:20251231
+      image: devkitpro/devkita64:latest
 
     steps:
       - name: Checkout (with submodules)
@@ -26,7 +28,12 @@ jobs:
           set -euo pipefail
 
           dkp-pacman -S --noconfirm --needed switch-ntfs-3g switch-lwext4
-          make -j"$(nproc)"
+          if [ -n "${HAUTH_SEED:-}" ]; then
+            HAUTH_SEED_OBF_HEX="$(python3 -c 'import os; s=os.environ.get("HAUTH_SEED", "").strip().encode("utf-8"); print("".join(f"{(b ^ ((0xA7 + ((i * 37) + 0x5C)) & 0xFF)):02x}" for i, b in enumerate(s)))')"
+            make -j"$(nproc)" HAUTH_SEED_OBF_HEX="$HAUTH_SEED_OBF_HEX"
+          else
+            make -j"$(nproc)"
+          fi
 
           # Your Makefile outputs ./cyberfoil.nro (TARGET := cyberfoil)
           if [ ! -f "./cyberfoil.nro" ]; then

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <switch.h>
 
 #include "shopInstall.hpp"
 
@@ -27,7 +28,9 @@ namespace inst::save_sync {
     };
 
     bool FetchRemoteSaveItems(const std::string& shopUrl, const std::string& user, const std::string& pass, std::vector<shopInstStuff::ShopItem>& outItems, std::string& warning);
+    bool BuildEntriesForUser(const std::vector<shopInstStuff::ShopItem>& remoteItems, const AccountUid* uid, std::vector<SaveSyncEntry>& outEntries, std::string& warning);
     bool BuildEntries(const std::vector<shopInstStuff::ShopItem>& remoteItems, std::vector<SaveSyncEntry>& outEntries, std::string& warning);
+    bool UploadSaveToServerForUser(const std::string& shopUrl, const std::string& user, const std::string& pass, const AccountUid* uid, const SaveSyncEntry& entry, const std::string& note, std::string& error);
     bool UploadSaveToServer(const std::string& shopUrl, const std::string& user, const std::string& pass, const SaveSyncEntry& entry, const std::string& note, std::string& error);
     bool DownloadSaveToConsole(const std::string& shopUrl, const std::string& user, const std::string& pass, const SaveSyncEntry& entry, const SaveSyncRemoteVersion* remoteVersion, std::string& error);
     bool DeleteSaveFromServer(const std::string& shopUrl, const std::string& user, const std::string& pass, const SaveSyncEntry& entry, const SaveSyncRemoteVersion* remoteVersion, std::string& error);

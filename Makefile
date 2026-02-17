@@ -53,7 +53,7 @@ INCLUDES	:=	include include/ui include/data include/install include/nx include/n
 				$(PLUTONIUM_INCLUDE_SWITCH) $(PLUTONIUM_INCLUDE_OUTPUT) $(PLUTONIUM_INCLUDE_SOURCE) external/libhaze/include
 APP_TITLE	:=	CyberFoil
 APP_AUTHOR	:=	luketanti
-APP_VERSION	:=	1.4.0
+APP_VERSION	:=	1.4.1
 ICON		:=	romfs/images/icon.jpg
 ROMFS		:=	romfs
 
@@ -61,6 +61,9 @@ ROMFS		:=	romfs
 # options for code generation
 #---------------------------------------------------------------------------------
 DEFINES	+=	-DAPP_VERSION=\"$(APP_VERSION)\"
+ifneq ($(strip $(HAUTH_SEED_OBF_HEX)),)
+DEFINES += -DHAUTH_SEED_OBF_HEX=\"$(HAUTH_SEED_OBF_HEX)\"
+endif
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \

@@ -25,9 +25,11 @@
 #include "util/config.hpp"
 #include "util/curl.hpp"
 #include "util/error.hpp"
+#include "util/hauth.hpp"
 #include "util/json.hpp"
 #include "util/lang.hpp"
 #include "util/network_util.hpp"
+#include "util/uid.hpp"
 #include "util/util.hpp"
 
 namespace inst::ui {
@@ -127,7 +129,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildTinfoilHeaders()
+    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -136,13 +138,15 @@ namespace {
         std::string versionHeader = "Version: " + versionValue;
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
+        std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
+        std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
         return {
             themeHeader,
-            "UID: 0000000000000000000000000000000000000000000000000000000000000000",
+            uidHeader,
             versionHeader,
             revisionHeader,
             languageHeader,
-            "HAUTH: 0",
+            hauthHeader,
             "UAUTH: 0"
         };
     }
@@ -958,7 +962,7 @@ namespace shopInstStuff {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "tinfoil");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
@@ -974,7 +978,7 @@ namespace shopInstStuff {
         }
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildTinfoilHeaders();
+        const auto headers = BuildTinfoilHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)

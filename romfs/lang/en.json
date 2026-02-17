@@ -7,6 +7,7 @@
             "shop": "Install from eShop",
             "usb": "Install from NS-USBloader",
             "mtp": "Install over MTP",
+            "backup": "Backup Save Data",
             "sig": "Manage signature patches",
             "set": "Settings",
             "exit": "Exit"
@@ -45,6 +46,7 @@
             "net": "Install files from LAN or internet sources.",
             "sig": "Install, update, or remove signature patches.",
             "set": "Change CyberFoil preferences and shop settings.",
+            "backup": "Uploads all local save data for the selected user to your configured shop server in one action.\n\nHow it works:\n1. If multiple users exist, choose which account to back up.\n2. If no shop is configured, CyberFoil tries saved shop profiles first, then asks for a shop URL.\n3. Enter a backup note (required).\n4. CyberFoil scans that user's local saves and uploads each one to the server.\n5. Progress is shown during scan and upload.\n6. A final summary reports uploaded and failed saves.",
             "exit": "Close CyberFoil and return to HOME."
         }
     },
@@ -222,6 +224,7 @@
             "shop_pass": "eShop password: ",
             "shop_hide_installed": "Hide installed titles in eShop",
             "shop_hide_installed_section": "Hide Installed section in eShop",
+            "shop_all_base_only": "Only show base titles in All section",
             "shop_start_grid_mode": "Start shop in grid mode",
             "shop_reset_icons": "Reset shop icon cache",
             "language": "Language: ",
@@ -282,3 +285,9 @@
         "cancel_desc": "Press B to cancel"
     }
 }
+
+
+
+
+
+

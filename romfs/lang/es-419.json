@@ -7,6 +7,7 @@
             "shop": "Instalar desde eShop",
             "usb": "Instalar desde NS-USBloader",
             "mtp": "Instalar via MTP",
+            "backup": "Respaldar datos guardados",
             "sig": "Administrar sigpatches",
             "set": "Ajustes",
             "exit": "Salir"
@@ -45,6 +46,7 @@
             "net": "Instala archivos desde fuentes LAN o de internet.",
             "sig": "Instala, actualiza o elimina parches de firma.",
             "set": "Cambia las preferencias de CyberFoil y opciones de la tienda.",
+            "backup": "Respalda todos los datos guardados locales del usuario seleccionado en tu servidor de tienda configurado con una sola accion.\n\nComo funciona:\n1. Si hay varios usuarios, primero elige la cuenta a respaldar.\n2. Si no hay una tienda configurada, CyberFoil intenta perfiles guardados y luego pide una URL de tienda.\n3. Ingresa una nota de respaldo (obligatoria).\n4. CyberFoil analiza los guardados locales de ese usuario y sube cada uno al servidor.\n5. Se muestra progreso durante el analisis y la subida.\n6. Un resumen final muestra exitos y fallos.",
             "exit": "Cierra CyberFoil y vuelve al menú HOME."
         }
     },
@@ -222,6 +224,7 @@
             "shop_pass": "Contraseña de eShop: ",
             "shop_hide_installed": "Ocultar los títulos instalados en la eShop",
             "shop_hide_installed_section": "Ocultar la secci\u00f3n Instalados en la eShop",
+            "shop_all_base_only": "Mostrar solo títulos base en la sección Todo",
             "shop_start_grid_mode": "Iniciar la tienda en modo cuadrícula",
             "shop_reset_icons": "Reiniciar el cache de iconos de la tienda",
             "language": "Idioma: ",
@@ -282,3 +285,9 @@
         "cancel_desc": "Pulsa B para cancelar"
     }
 }
+
+
+
+
+
+

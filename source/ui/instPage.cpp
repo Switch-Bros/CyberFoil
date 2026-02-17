@@ -1,6 +1,7 @@
 #include <filesystem>
 #include "ui/MainApplication.hpp"
 #include "ui/instPage.hpp"
+#include "util/util.hpp"
 #include "util/config.hpp"
 #include "mtp_server.hpp"
 #include "ui/bottomHint.hpp"
@@ -236,6 +237,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        inst::util::playNavigationClickIfNeeded(Down);
         if (Down & HidNpadButton_B) {
             if (inst::mtp::IsInstallServerRunning()) {
                 inst::mtp::StopInstallServer();

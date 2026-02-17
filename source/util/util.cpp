@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <curl/curl.h>
 #include <regex>
+#include <mutex>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include "switch.h"
@@ -18,10 +19,51 @@
 #include "nx/usbhdd.h"
 
 namespace inst::util {
+    namespace {
+        std::mutex gAudioPlaybackMutex;
+        Mix_Chunk* gNavigationClickChunk = nullptr;
+        std::string gNavigationClickLoadedPath;
+        bool gNavigationClickAudioOpen = false;
+
+        bool ensureNavigationClickAudioReadyLocked(const std::string& audioPath) {
+            int audio_rate = 22050;
+            Uint16 audio_format = AUDIO_S16SYS;
+            int audio_channels = 2;
+            int audio_buffers = 1024;
+
+            if (!gNavigationClickAudioOpen) {
+                if (Mix_OpenAudio(audio_rate, audio_format, audio_channels, audio_buffers) != 0)
+                    return false;
+                gNavigationClickAudioOpen = true;
+            }
+
+            if (gNavigationClickChunk == nullptr || gNavigationClickLoadedPath != audioPath) {
+                if (gNavigationClickChunk != nullptr) {
+                    Mix_FreeChunk(gNavigationClickChunk);
+                    gNavigationClickChunk = nullptr;
+                }
+                gNavigationClickChunk = Mix_LoadWAV(audioPath.c_str());
+                if (gNavigationClickChunk == nullptr)
+                    return false;
+                gNavigationClickLoadedPath = audioPath;
+            }
+            return true;
+        }
+
+        std::string resolveNavigationClickPath() {
+            std::string audioPath = "romfs:/audio/click.wav";
+            const std::string customClickPath = inst::config::appDir + "/click.wav";
+            if (std::filesystem::exists(customClickPath))
+                audioPath = customClickPath;
+            return audioPath;
+        }
+    }
+
     void initApp () {
         if (!std::filesystem::exists("sdmc:/switch")) std::filesystem::create_directory("sdmc:/switch");
         if (!std::filesystem::exists(inst::config::appDir)) std::filesystem::create_directory(inst::config::appDir);
         inst::config::parseConfig();
+        primeNavigationClickAudio();
 
         socketInitializeDefault();
         #ifdef __DEBUG__
@@ -269,9 +311,16 @@ namespace inst::util {
         return state == UsbState_Configured;
     }
 
+    void primeNavigationClickAudio() {
+        std::lock_guard<std::mutex> lock(gAudioPlaybackMutex);
+        const std::string audioPath = resolveNavigationClickPath();
+        ensureNavigationClickAudioReadyLocked(audioPath);
+    }
+
     void playAudio(std::string audioPath) {
         if (audioPath.empty())
             return;
+        std::lock_guard<std::mutex> lock(gAudioPlaybackMutex);
         int audio_rate = 22050;
         Uint16 audio_format = AUDIO_S16SYS;
         int audio_channels = 2;
@@ -300,6 +349,36 @@ namespace inst::util {
         Mix_CloseAudio();
 
         return;
+    }
+
+    void playNavigationClick() {
+        if (!inst::config::soundEnabled)
+            return;
+
+        static u64 lastPlayTick = 0;
+        const u64 now = armGetSystemTick();
+        const u64 tickFreq = armGetSystemTickFreq();
+        if (lastPlayTick != 0 && (now - lastPlayTick) < (tickFreq / 20))
+            return;
+        lastPlayTick = now;
+
+        const std::string audioPath = resolveNavigationClickPath();
+
+        std::lock_guard<std::mutex> lock(gAudioPlaybackMutex);
+        if (!ensureNavigationClickAudioReadyLocked(audioPath))
+            return;
+
+        Mix_PlayChannel(-1, gNavigationClickChunk, 0);
+    }
+
+    void playNavigationClickIfNeeded(std::uint64_t buttonsDown) {
+        constexpr std::uint64_t kNavButtons =
+            HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right |
+            HidNpadButton_StickLUp | HidNpadButton_StickLDown | HidNpadButton_StickLLeft | HidNpadButton_StickLRight |
+            HidNpadButton_StickRUp | HidNpadButton_StickRDown | HidNpadButton_StickRLeft | HidNpadButton_StickRRight;
+
+        if ((buttonsDown & kNavButtons) != 0)
+            playNavigationClick();
     }
     
    std::vector<std::string> checkForAppUpdate () {

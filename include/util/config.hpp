@@ -11,7 +11,6 @@ namespace inst::config {
     static const std::string appVersion = std::string(APP_VERSION);
 
     extern std::string gAuthKey;
-    extern std::string sigPatchesUrl;
     extern std::string lastNetUrl;
     extern std::string offlineDbManifestUrl;
     extern std::string shopUrl;
@@ -31,6 +30,7 @@ namespace inst::config {
     extern bool usbAck;
     extern bool shopHideInstalled;
     extern bool shopHideInstalledSection;
+    extern bool shopAllBaseOnly;
     extern bool shopStartGridMode;
     extern bool offlineDbAutoCheckOnStartup;
 
