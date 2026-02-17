@@ -292,7 +292,6 @@ namespace inst::ui {
             return;
         }
 
-        addItem("options.menu_items.sig_url"_lang + inst::util::shortenString(inst::config::sigPatchesUrl, 42, false), false, false);
         addItem("options.menu_items.auto_update"_lang, true, inst::config::autoUpdate);
         addItem("options.menu_items.gay_option"_lang, true, inst::config::gayMode);
         addItem("options.menu_items.language"_lang + this->getMenuLanguage(inst::config::languageSetting), false, false);
@@ -493,7 +492,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
-                static const int kSystemMap[] = {15, 4, 5, 16, 17, 18};
+                static const int kSystemMap[] = {4, 5, 16, 17, 18};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kSystemMap) / sizeof(kSystemMap[0])))) return;
                 selectedIndex = kSystemMap[selectedIndex];
             }
@@ -954,14 +953,6 @@ namespace inst::ui {
                     inst::config::shopStartGridMode = !inst::config::shopStartGridMode;
                     inst::config::setConfig();
                     this->refreshOptions();
-                    break;
-                case 15:
-                    keyboardResult = inst::util::softwareKeyboard("options.sig_hint"_lang, inst::config::sigPatchesUrl.c_str(), 500);
-                    if (keyboardResult.size() > 0) {
-                        inst::config::sigPatchesUrl = keyboardResult;
-                        inst::config::setConfig();
-                        this->refreshOptions();
-                    }
                     break;
                 case 16:
                     languageList = languageStrings;

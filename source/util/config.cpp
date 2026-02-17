@@ -10,7 +10,6 @@
 
 namespace inst::config {
     std::string gAuthKey;
-    std::string sigPatchesUrl;
     std::string lastNetUrl;
     std::string offlineDbManifestUrl;
     std::string shopUrl;
@@ -476,7 +475,6 @@ namespace inst::config {
             {"ignoreReqVers", ignoreReqVers},
             {"languageSetting", languageSetting},
             {"overClock", overClock},
-            {"sigPatchesUrl", sigPatchesUrl},
             {"usbAck", usbAck},
             {"validateNCAs", validateNCAs},
             {"lastNetUrl", lastNetUrl},
@@ -497,7 +495,6 @@ namespace inst::config {
 
     void parseConfig() {
         gAuthKey = {0x41,0x49,0x7a,0x61,0x53,0x79,0x42,0x4d,0x71,0x76,0x34,0x64,0x58,0x6e,0x54,0x4a,0x4f,0x47,0x51,0x74,0x5a,0x5a,0x53,0x33,0x43,0x42,0x6a,0x76,0x66,0x37,0x34,0x38,0x51,0x76,0x78,0x53,0x7a,0x46,0x30};
-        sigPatchesUrl = "https://sigmapatches.coomer.party/sigpatches.zip";
         languageSetting = 99;
         autoUpdate = true;
         deletePrompt = true;
@@ -533,7 +530,6 @@ namespace inst::config {
             if (j.contains("ignoreReqVers")) ignoreReqVers = j["ignoreReqVers"].get<bool>();
             if (j.contains("languageSetting")) languageSetting = j["languageSetting"].get<int>();
             if (j.contains("overClock")) overClock = j["overClock"].get<bool>();
-            if (j.contains("sigPatchesUrl")) sigPatchesUrl = j["sigPatchesUrl"].get<std::string>();
             if (j.contains("usbAck")) usbAck = j["usbAck"].get<bool>();
             if (j.contains("validateNCAs")) validateNCAs = j["validateNCAs"].get<bool>();
             if (j.contains("lastNetUrl")) lastNetUrl = j["lastNetUrl"].get<std::string>();
@@ -550,8 +546,6 @@ namespace inst::config {
             // If loading values from the config fails, we just load the defaults and overwrite the old config
             setConfig();
         }
-        if (sigPatchesUrl == "https://github.com/Huntereb/Awoo-Installer/releases/download/SignaturePatches/patches.zip")
-            sigPatchesUrl = "https://sigmapatches.coomer.party/sigpatches.zip";
 
         EnsureShopsDirectory();
         TryMigrateLegacyShopToJson();

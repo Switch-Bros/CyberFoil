@@ -8,7 +8,6 @@
 #include "util/offline_db_update.hpp"
 #include "util/error.hpp"
 #include "util/lang.hpp"
-#include "sigInstall.hpp"
 #include "data/buffered_placeholder_writer.hpp"
 #include "mtp_server.hpp"
 #include "nx/usbhdd.h"
@@ -154,9 +153,9 @@ namespace inst::ui {
         this->mtpInstallMenuItem = pu::ui::elm::MenuItem::New("main.menu.mtp"_lang);
         this->mtpInstallMenuItem->SetColor(COLOR("#FFFFFFFF"));
         this->mtpInstallMenuItem->SetIcon("romfs:/images/icons/usb-port.png");
-        this->sigPatchesMenuItem = pu::ui::elm::MenuItem::New("main.menu.sig"_lang);
-        this->sigPatchesMenuItem->SetColor(COLOR("#FFFFFFFF"));
-        this->sigPatchesMenuItem->SetIcon("romfs:/images/icons/wrench.png");
+        this->backupSaveDataMenuItem = pu::ui::elm::MenuItem::New("Backup Save Data");
+        this->backupSaveDataMenuItem->SetColor(COLOR("#FFFFFFFF"));
+        this->backupSaveDataMenuItem->SetIcon("romfs:/images/icons/wrench.png");
         this->settingsMenuItem = pu::ui::elm::MenuItem::New("main.menu.set"_lang);
         this->settingsMenuItem->SetColor(COLOR("#FFFFFFFF"));
         this->settingsMenuItem->SetIcon("romfs:/images/icons/settings.png");
@@ -172,7 +171,7 @@ namespace inst::ui {
             "main.menu.mtp"_lang,
             "main.menu.usb"_lang,
             "main.menu.net"_lang,
-            "main.menu.sig"_lang,
+            "Backup Save Data",
             "main.menu.set"_lang,
             "main.menu.exit"_lang
         };
@@ -302,8 +301,8 @@ namespace inst::ui {
         inst::ui::instPage::setInstInfoText("inst.mtp.waiting.desc"_lang);
     }
 
-    void MainPage::sigPatchesMenuItem_Click() {
-        sig::installSigPatches();
+    void MainPage::backupSaveDataMenuItem_Click() {
+        mainApp->CreateShowDialog("Backup Save Data", "Coming soon.", {"common.ok"_lang}, true);
     }
 
     void MainPage::exitMenuItem_Click() {
@@ -362,7 +361,7 @@ namespace inst::ui {
                 this->netInstallMenuItem_Click();
                 break;
             case 6:
-                this->sigPatchesMenuItem_Click();
+                this->backupSaveDataMenuItem_Click();
                 break;
             case 7:
                 this->settingsMenuItem_Click();
@@ -404,8 +403,8 @@ namespace inst::ui {
                 desc = "main.info.net"_lang;
                 break;
             case 6:
-                title = "main.menu.sig"_lang;
-                desc = "main.info.sig"_lang;
+                title = "Backup Save Data";
+                desc = "Coming soon.";
                 break;
             case 7:
                 title = "main.menu.set"_lang;

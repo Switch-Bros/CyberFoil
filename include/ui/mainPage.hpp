@@ -15,7 +15,7 @@ namespace inst::ui {
             void usbInstallMenuItem_Click();
             void hddInstallMenuItem_Click();
             void mtpInstallMenuItem_Click();
-            void sigPatchesMenuItem_Click();
+            void backupSaveDataMenuItem_Click();
             void settingsMenuItem_Click();
             void exitMenuItem_Click();
             void onInput(u64 Down, u64 Up, u64 Held, pu::ui::Touch Pos);
@@ -58,7 +58,7 @@ namespace inst::ui {
             pu::ui::elm::MenuItem::Ref usbInstallMenuItem;
             pu::ui::elm::MenuItem::Ref hddInstallMenuItem;
             pu::ui::elm::MenuItem::Ref mtpInstallMenuItem;
-            pu::ui::elm::MenuItem::Ref sigPatchesMenuItem;
+            pu::ui::elm::MenuItem::Ref backupSaveDataMenuItem;
             pu::ui::elm::MenuItem::Ref settingsMenuItem;
             pu::ui::elm::MenuItem::Ref exitMenuItem;
             std::vector<Rectangle::Ref> mainGridTiles;

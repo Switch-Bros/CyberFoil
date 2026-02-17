@@ -19,7 +19,6 @@ A NSP, NSZ, XCI, & XCZ Installer with basic eShop support for Nintendo Switch
 - Installs NSP/NSZ/XCI/XCZ files over the internet by URL or Google Drive
 - Installs NSP/NSZ/XCI/XCZ files over MTP (USB file transfer)
 - Verifies NCAs by header signature before they're installed
-- Installs and manages the latest signature patches quickly and easily
 - Built-in eShop with sections, search, and cover art previews
 - Save Sync in eShop: browse console/server saves, upload with notes, download specific backup versions, and delete server backups
 - OLED mode for pure-black backgrounds
