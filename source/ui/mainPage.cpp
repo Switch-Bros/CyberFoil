@@ -336,7 +336,7 @@ namespace inst::ui {
         this->mtpInstallMenuItem = pu::ui::elm::MenuItem::New("main.menu.mtp"_lang);
         this->mtpInstallMenuItem->SetColor(COLOR("#FFFFFFFF"));
         this->mtpInstallMenuItem->SetIcon("romfs:/images/icons/usb-port.png");
-        this->backupSaveDataMenuItem = pu::ui::elm::MenuItem::New("Backup Save Data");
+        this->backupSaveDataMenuItem = pu::ui::elm::MenuItem::New("main.menu.backup"_lang);
         this->backupSaveDataMenuItem->SetColor(COLOR("#FFFFFFFF"));
         this->backupSaveDataMenuItem->SetIcon("romfs:/images/icons/save-data-cloud.png");
         this->settingsMenuItem = pu::ui::elm::MenuItem::New("main.menu.set"_lang);
@@ -354,7 +354,7 @@ namespace inst::ui {
             "main.menu.mtp"_lang,
             "main.menu.usb"_lang,
             "main.menu.net"_lang,
-            "Backup Save Data",
+            "main.menu.backup"_lang,
             "main.menu.set"_lang,
             "main.menu.exit"_lang
         };
@@ -502,7 +502,7 @@ namespace inst::ui {
         std::vector<BackupUserChoice> users;
         std::string userError;
         if (!ListBackupUsers(users, userError)) {
-            mainApp->CreateShowDialog("Backup Save Data", userError.empty() ? "Unable to read user accounts." : userError, {"common.ok"_lang}, true);
+            mainApp->CreateShowDialog("main.menu.backup"_lang, userError.empty() ? "Unable to read user accounts." : userError, {"common.ok"_lang}, true);
             return;
         }
 
@@ -544,12 +544,12 @@ namespace inst::ui {
         };
         backupNote = trimAscii(backupNote);
         if (backupNote.empty()) {
-            mainApp->CreateShowDialog("Backup Save Data", "Backup canceled. A note is required.", {"common.ok"_lang}, true);
+            mainApp->CreateShowDialog("main.menu.backup"_lang, "Backup canceled. A note is required.", {"common.ok"_lang}, true);
             return;
         }
 
         inst::ui::instPage::loadInstallScreen();
-        inst::ui::instPage::setTopInstInfoText("Backup Save Data");
+        inst::ui::instPage::setTopInstInfoText("main.menu.backup"_lang);
         inst::ui::instPage::setInstInfoText("Loading backup data...");
         inst::ui::instPage::setProgressDetailText("Fetching server save metadata...");
         inst::ui::instPage::setInstBarPerc(10);
@@ -583,7 +583,7 @@ namespace inst::ui {
             inst::ui::instPage::clearProgressDetailText();
             mainApp->LoadLayout(mainApp->mainPage);
             mainApp->CreateShowDialog(
-                "Backup Save Data",
+                "main.menu.backup"_lang,
                 "No local save data found for the active user.\nLaunch games once to create save data, then retry.",
                 {"common.ok"_lang},
                 true);
@@ -606,7 +606,7 @@ namespace inst::ui {
         inst::ui::instPage::clearProgressDetailText();
         mainApp->LoadLayout(mainApp->mainPage);
         const int confirm = mainApp->CreateShowDialog(
-            "Backup Save Data",
+            "main.menu.backup"_lang,
             "Upload all local saves to the server now?\n"
             "Shop: " + inst::util::shortenString(shopDisplayName, 86, false) + "\n"
             "Saves to upload: " + std::to_string(localEntries.size()),
@@ -616,7 +616,7 @@ namespace inst::ui {
             return;
 
         inst::ui::instPage::loadInstallScreen();
-        inst::ui::instPage::setTopInstInfoText("Backup Save Data");
+        inst::ui::instPage::setTopInstInfoText("main.menu.backup"_lang);
         inst::ui::instPage::setInstInfoText("Preparing uploads...");
         inst::ui::instPage::setInstBarPerc(0);
         inst::ui::instPage::setProgressDetailText("0/" + std::to_string(localEntries.size()));
@@ -664,7 +664,7 @@ namespace inst::ui {
         inst::ui::instPage::clearProgressDetailText();
         inst::ui::instPage::clearInstallIcon();
         mainApp->LoadLayout(mainApp->mainPage);
-        mainApp->CreateShowDialog("Backup Save Data", summary, {"common.ok"_lang}, true);
+        mainApp->CreateShowDialog("main.menu.backup"_lang, summary, {"common.ok"_lang}, true);
     }
 
     void MainPage::exitMenuItem_Click() {
@@ -821,16 +821,8 @@ namespace inst::ui {
                 desc = "main.info.net"_lang;
                 break;
             case 6:
-                title = "Backup Save Data";
-                desc =
-                    "Uploads all local save data for the active user to your shop server in one action.\n\n"
-                    "How it works:\n"
-                    "1. If multiple users exist, choose which account to back up.\n"
-                    "2. If no shop is configured, CyberFoil tries saved shop profiles first, then asks for a shop URL.\n"
-                    "3. You must enter a backup note (required).\n"
-                    "4. CyberFoil scans that user's local saves and uploads each one to the server.\n"
-                    "5. A progress screen shows current title and overall progress.\n"
-                    "6. A final summary reports uploaded and failed saves.";
+                title = "main.menu.backup"_lang;
+                desc = "main.info.backup"_lang;
                 break;
             case 7:
                 title = "main.menu.set"_lang;

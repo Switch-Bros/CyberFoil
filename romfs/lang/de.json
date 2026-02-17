@@ -7,6 +7,7 @@
             "shop": "Installieren vom eShop",
             "usb": "Mit NS-USBloader installieren",
             "mtp": "Mit MTP installieren",
+            "backup": "Speicherdaten sichern",
             "sig": "Verwalte Signatur-Patches",
             "set": "Einstellungen",
             "exit": "Beenden"
@@ -45,6 +46,7 @@
             "net": "Installiere Dateien über LAN oder Internetquellen.",
             "sig": "Signatur-Patches installieren, aktualisieren oder entfernen.",
             "set": "CyberFoil-Einstellungen und Shop-Optionen ändern.",
+            "backup": "Sichert alle lokalen Speicherdaten des gewahlten Benutzers mit einer Aktion auf deinen konfigurierten Shop-Server.\n\nSo funktioniert es:\n1. Wenn mehrere Benutzer vorhanden sind, wahle zuerst das Konto aus.\n2. Wenn kein Shop konfiguriert ist, versucht CyberFoil gespeicherte Shop-Profile und fragt sonst nach einer Shop-URL.\n3. Gib eine Sicherungsnotiz ein (erforderlich).\n4. CyberFoil scannt die lokalen Speicherdaten dieses Benutzers und ladt jeden Eintrag auf den Server hoch.\n5. Fortschritt wird beim Scannen und Hochladen angezeigt.\n6. Eine Zusammenfassung zeigt erfolgreiche und fehlgeschlagene Uploads.",
             "exit": "CyberFoil schließen und zum HOME-Menü zurückkehren."
         }
     },
@@ -282,3 +284,9 @@
         "cancel_desc": "Drücke  zum Abbrechen "
     }
 }
+
+
+
+
+
+
