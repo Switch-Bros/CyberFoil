@@ -734,6 +734,7 @@ namespace inst::ui {
             mainApp->CallForRender();
             const u64 down = mainApp->GetButtonsDown();
             const u64 held = mainApp->GetButtonsHeld();
+            inst::util::playNavigationClickIfNeeded(down);
 
             if (waitARelease) {
                 if ((held & HidNpadButton_A) == 0)
@@ -847,6 +848,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        inst::util::playNavigationClickIfNeeded(Down);
         if (((Down & HidNpadButton_Plus) || (Down & HidNpadButton_Minus) || (Down & HidNpadButton_B)) && mainApp->IsShown()) {
             mainApp->FadeOut();
             mainApp->Close();

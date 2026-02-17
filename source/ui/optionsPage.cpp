@@ -386,6 +386,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
+        inst::util::playNavigationClickIfNeeded(Down);
         if (Down & HidNpadButton_B) {
             mainApp->LoadLayout(mainApp->mainPage);
         }
