@@ -22,3 +22,4 @@ Offline metadata/icons (no online lookups):
 - Uses [XorTroll's Plutonium](https://github.com/XorTroll/Plutonium) for a pretty graphical interface
 
 
+
