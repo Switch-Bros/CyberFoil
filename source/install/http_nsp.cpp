@@ -137,6 +137,7 @@ namespace tin::install::nsp
         u64 startTime = armGetSystemTick();
         size_t startSizeBuffered = 0;
         double speed = 0.0;
+        double emaSpeed = 0.0;
 
         inst::ui::instPage::setInstBarPerc(0);
         while (!bufferedPlaceholderWriter.IsBufferDataComplete() && !stopThreadsHttpNsp)
@@ -150,6 +151,12 @@ namespace tin::install::nsp
                 double duration = ((double)(newTime - startTime) / (double)freq);
                 speed =  mbBuffered / duration;
 
+                if (emaSpeed <= 0.0) {
+                    emaSpeed = speed;
+                } else {
+                    emaSpeed = (emaSpeed * 0.7) + (speed * 0.3);
+                }
+
                 startTime = newTime;
                 startSizeBuffered = newSizeBuffered;
 
@@ -158,13 +165,13 @@ namespace tin::install::nsp
                 int downloadProgress = (int)((sizeBuffered / totalSize) * 100.0);
 
                 std::string etaText = "--:--";
-                if (speed > 0.0 && totalSize > sizeBuffered) {
+                if (emaSpeed > 0.0 && totalSize > sizeBuffered) {
                     const double remainingMb = (totalSize - sizeBuffered) / 1000000.0;
-                    const auto etaSeconds = static_cast<std::uint64_t>(remainingMb / speed);
+                    const auto etaSeconds = static_cast<std::uint64_t>(remainingMb / emaSpeed);
                     etaText = FormatEta(etaSeconds);
                 }
 
-                inst::ui::instPage::setInstInfoText("inst.info_page.downloading"_lang + inst::util::formatUrlString(ncaFileName) + "inst.info_page.at"_lang + std::to_string(speed).substr(0, std::to_string(speed).size()-4) + "MB/s");
+                inst::ui::instPage::setInstInfoText("inst.info_page.downloading"_lang + inst::util::formatUrlString(ncaFileName) + "inst.info_page.at"_lang + FormatOneDecimal(emaSpeed) + " MB/s");
                 inst::ui::instPage::setInstBarPerc((double)downloadProgress);
                 inst::ui::instPage::setProgressDetailText(
                     "Downloaded " + FormatOneDecimal(sizeBuffered / 1000000.0) + " / " +
