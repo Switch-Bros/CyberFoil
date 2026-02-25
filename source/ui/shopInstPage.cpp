@@ -341,6 +341,107 @@ namespace {
         return out;
     }
 
+    std::vector<std::size_t> BuildUtf8Boundaries(const std::string& text)
+    {
+        std::vector<std::size_t> boundaries;
+        boundaries.reserve(text.size() + 1);
+        boundaries.push_back(0);
+        for (std::size_t i = 0; i < text.size();) {
+            const std::size_t start = i;
+            (void)DecodeUtf8CodePoint(text, i);
+            if (i <= start)
+                i = start + 1;
+            boundaries.push_back(i);
+        }
+        return boundaries;
+    }
+
+    bool FitsSingleLineMenuRender(const std::string& text, int fontSize, int maxWidth, int maxHeight)
+    {
+        if (maxWidth <= 0 || maxHeight <= 0)
+            return false;
+        const auto font = pu::ui::render::LoadDefaultFont(fontSize);
+        const auto meme = pu::ui::render::LoadSharedFont(pu::ui::render::SharedFont::NintendoExtended, fontSize);
+        auto texture = pu::ui::render::RenderText(font, meme, text, COLOR("#FFFFFFFF"));
+        if (texture == nullptr)
+            return false;
+        const int width = pu::ui::render::GetTextureWidth(texture);
+        const int height = pu::ui::render::GetTextureHeight(texture);
+        pu::ui::render::DeleteTexture(texture);
+        return (width <= maxWidth) && (height <= maxHeight);
+    }
+
+    std::string ClipSingleLineByMenuRender(const std::string& text, int fontSize, int maxWidth, int maxHeight, bool* overflow = nullptr)
+    {
+        if (overflow != nullptr)
+            *overflow = false;
+        if (FitsSingleLineMenuRender(text, fontSize, maxWidth, maxHeight))
+            return text;
+
+        if (overflow != nullptr)
+            *overflow = true;
+        const auto boundaries = BuildUtf8Boundaries(text);
+        int low = 0;
+        int high = static_cast<int>(boundaries.size()) - 1;
+        int best = -1;
+        while (low <= high) {
+            const int mid = low + ((high - low) / 2);
+            const std::string candidate = text.substr(0, boundaries[static_cast<std::size_t>(mid)]);
+            if (FitsSingleLineMenuRender(candidate, fontSize, maxWidth, maxHeight)) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        if (best <= 0)
+            return std::string();
+        return text.substr(0, boundaries[static_cast<std::size_t>(best)]);
+    }
+
+    std::string ClipSingleLinePrefixSuffixByMenuRender(const std::string& prefix, const std::string& suffix, int fontSize, int maxWidth, int maxHeight, bool* overflow = nullptr)
+    {
+        if (overflow != nullptr)
+            *overflow = false;
+
+        const std::string full = prefix + suffix;
+        if (FitsSingleLineMenuRender(full, fontSize, maxWidth, maxHeight))
+            return full;
+
+        if (overflow != nullptr)
+            *overflow = true;
+        const std::string marker = prefix.empty() ? std::string() : std::string("...");
+        const auto boundaries = BuildUtf8Boundaries(prefix);
+        int low = 0;
+        int high = static_cast<int>(boundaries.size()) - 1;
+        int best = -1;
+        while (low <= high) {
+            const int mid = low + ((high - low) / 2);
+            std::string candidate = prefix.substr(0, boundaries[static_cast<std::size_t>(mid)]);
+            if (!candidate.empty() && !marker.empty())
+                candidate += marker;
+            candidate += suffix;
+            if (FitsSingleLineMenuRender(candidate, fontSize, maxWidth, maxHeight)) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        if (best < 0) {
+            bool suffixOverflow = false;
+            return ClipSingleLineByMenuRender(suffix, fontSize, maxWidth, maxHeight, &suffixOverflow);
+        }
+
+        std::string clipped = prefix.substr(0, boundaries[static_cast<std::size_t>(best)]);
+        if (!clipped.empty() && !marker.empty())
+            clipped += marker;
+        clipped += suffix;
+        return clipped;
+    }
+
     bool TryParseHexU64(const std::string& hex, std::uint64_t& out)
     {
         if (hex.empty())
@@ -1020,6 +1121,12 @@ namespace inst::ui {
         textWidth = maxRowRight - textX;
     }
 
+    static std::string BuildSingleLineGridTitle(const std::string& title)
+    {
+        const std::string normalized = OverflowText::NormalizeSingleLineText(title);
+        return ClipSingleLineByMenuRender(normalized, 18, 1260, 26, nullptr);
+    }
+
     std::string shopInstPage::buildListMenuLabel(const shopInstStuff::ShopItem& item)
     {
         const std::string normalizedName = OverflowText::NormalizeSingleLineText(item.name);
@@ -1027,7 +1134,7 @@ namespace inst::ui {
         std::string suffix = sizeText.empty() ? "" : (" [" + sizeText + "]");
         std::string label = normalizedName + suffix;
 
-        if (this->listMarqueeOverlayText == nullptr || this->menu == nullptr)
+        if (this->menu == nullptr)
             return label;
 
         int textX = 0;
@@ -1037,16 +1144,10 @@ namespace inst::ui {
         if (maxMenuLabelWidth <= 0)
             return label;
         const int maxMenuLabelHeight = this->menu->GetItemSize() - 2;
-        bool overflow = false;
-        label = OverflowText::ClipSingleLinePrefixWithSuffix(
-            normalizedName, suffix, this->listMarqueeOverlayText, maxMenuLabelWidth, maxMenuLabelHeight, &overflow);
-        if (!overflow)
-            return label;
-        if (!label.empty())
-            return label;
-        bool suffixOverflow = false;
-        return OverflowText::ClipSingleLineText(
-            suffix, this->listMarqueeOverlayText, maxMenuLabelWidth, maxMenuLabelHeight, &suffixOverflow);
+        constexpr int kShopListMenuFontSize = 22;
+        label = ClipSingleLinePrefixSuffixByMenuRender(
+            normalizedName, suffix, kShopListMenuFontSize, maxMenuLabelWidth, maxMenuLabelHeight, nullptr);
+        return label;
     }
 
     void shopInstPage::updateListMarquee(bool force)
@@ -1146,7 +1247,10 @@ namespace inst::ui {
             return;
         }
 
-        std::string label = normalizedName + suffix;
+        constexpr int kShopListMenuFontSize = 22;
+        constexpr int kRenderNoWrapWidth = 1279;
+        std::string label = ClipSingleLinePrefixSuffixByMenuRender(
+            normalizedName, suffix, kShopListMenuFontSize, kRenderNoWrapWidth, itemHeight - 2);
         this->listMarqueeOverlayText->SetText(label);
         this->listMarqueeMaxOffset = this->listMarqueeOverlayText->GetTextWidth() - maskWidth;
         if (this->listMarqueeMaxOffset < 0)
@@ -2721,7 +2825,7 @@ namespace inst::ui {
 
         if (this->gridSelectedIndex >= 0 && this->gridSelectedIndex < (int)this->visibleItems.size()) {
             std::string title = BuildGridTitleWithSize(this->visibleItems[this->gridSelectedIndex]);
-            this->gridTitleText->SetText(title);
+            this->gridTitleText->SetText(BuildSingleLineGridTitle(title));
             this->gridTitleText->SetVisible(true);
         } else {
             this->gridTitleText->SetVisible(false);
@@ -2946,7 +3050,7 @@ namespace inst::ui {
 
         if (this->shopGridIndex >= 0 && this->shopGridIndex < (int)this->visibleItems.size()) {
             std::string title = BuildGridTitleWithSize(this->visibleItems[this->shopGridIndex]);
-            this->gridTitleText->SetText(title);
+            this->gridTitleText->SetText(BuildSingleLineGridTitle(title));
             this->gridTitleText->SetVisible(true);
         } else {
             this->gridTitleText->SetVisible(false);
@@ -3397,12 +3501,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
-        const u64 verticalNavDownMask = HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
-        u64 clickDown = Down;
-        if (!this->shopGridMode) {
-            clickDown &= ~verticalNavDownMask;
-        }
-        inst::util::playNavigationClickIfNeeded(clickDown);
+        inst::util::playNavigationClickIfNeeded(Down);
         if (this->descriptionOverlayVisible) {
             if (Down & (HidNpadButton_B | HidNpadButton_ZL)) {
                 this->closeDescriptionOverlay();
