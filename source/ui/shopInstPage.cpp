@@ -12,6 +12,7 @@
 #include <switch.h>
 #include "ui/MainApplication.hpp"
 #include "ui/shopInstPage.hpp"
+#include "ui/overflowText.hpp"
 #include "util/config.hpp"
 #include "util/curl.hpp"
 #include "util/lang.hpp"
@@ -96,19 +97,6 @@ namespace {
 
     bool TryParseHexU64(const std::string& hex, std::uint64_t& out);
 
-    int ComputeListNameLimit(const std::string& suffix)
-    {
-        int nameLimit = 56;
-        if (!suffix.empty()) {
-            int maxSuffix = static_cast<int>(suffix.size()) + 1;
-            if (nameLimit > maxSuffix)
-                nameLimit -= maxSuffix;
-        }
-        if (nameLimit < 8)
-            nameLimit = 8;
-        return nameLimit;
-    }
-
     pu::ui::Color BlendOverOpaque(const pu::ui::Color& base, const pu::ui::Color& overlay)
     {
         const int a = static_cast<int>(overlay.A);
@@ -125,35 +113,6 @@ namespace {
     {
         const int luma = (static_cast<int>(bg.R) * 299) + (static_cast<int>(bg.G) * 587) + (static_cast<int>(bg.B) * 114);
         return luma >= (1000 * 150);
-    }
-
-    std::string NormalizeSingleLineTitle(const std::string& title)
-    {
-        if (title.empty())
-            return std::string();
-
-        std::string out;
-        out.reserve(title.size());
-        bool previousWasSpace = false;
-        for (char c : title) {
-            const unsigned char uc = static_cast<unsigned char>(c);
-            const bool isWhitespace = (std::isspace(uc) != 0) || (uc < 0x20) || (uc == 0x7F);
-            if (isWhitespace) {
-                if (!out.empty() && !previousWasSpace)
-                    out.push_back(' ');
-                previousWasSpace = true;
-                continue;
-            }
-            out.push_back(c);
-            previousWasSpace = false;
-        }
-        std::size_t start = 0;
-        while (start < out.size() && out[start] == ' ')
-            start++;
-        std::size_t end = out.size();
-        while (end > start && out[end - 1] == ' ')
-            end--;
-        return out.substr(start, end - start);
     }
 
     std::string NormalizeHex(std::string hex)
@@ -1040,46 +999,54 @@ namespace inst::ui {
         this->loadingBarFill->SetWidth((500 * percent) / 100);
     }
 
+    void shopInstPage::getListTextBounds(int& textX, int& textWidth) const
+    {
+        textX = 0;
+        textWidth = 0;
+        if (this->menu == nullptr)
+            return;
+
+        const int menuX = this->menu->GetProcessedX();
+        const int menuW = this->menu->GetWidth();
+        textX = menuX + 25;
+        if (!this->isInstalledSection() && !this->isSaveSyncSection())
+            textX = menuX + 76;
+        int maxRowRight = menuX + menuW - 28;
+        const int previewSafeRight = menuX + 860;
+        if (maxRowRight > previewSafeRight)
+            maxRowRight = previewSafeRight;
+        if (maxRowRight < textX)
+            maxRowRight = textX;
+        textWidth = maxRowRight - textX;
+    }
+
     std::string shopInstPage::buildListMenuLabel(const shopInstStuff::ShopItem& item)
     {
-        const std::string normalizedName = NormalizeSingleLineTitle(item.name);
+        const std::string normalizedName = OverflowText::NormalizeSingleLineText(item.name);
         std::string sizeText = FormatSizeText(item.size);
         std::string suffix = sizeText.empty() ? "" : (" [" + sizeText + "]");
-        int nameLimit = ComputeListNameLimit(suffix);
-        std::string label = inst::util::shortenString(normalizedName, nameLimit, true) + suffix;
+        std::string label = normalizedName + suffix;
 
         if (this->listMarqueeOverlayText == nullptr || this->menu == nullptr)
             return label;
 
-        constexpr int kMaxMenuLabelWidth = 1240;
-        const int maxMenuLabelHeight = this->menu->GetItemSize() - 2;
-        auto fitsSingleLine = [&](const std::string& candidate) {
-            this->listMarqueeOverlayText->SetText(candidate);
-            return (this->listMarqueeOverlayText->GetTextWidth() <= kMaxMenuLabelWidth)
-                && (this->listMarqueeOverlayText->GetTextHeight() <= maxMenuLabelHeight);
-        };
-
-        if (fitsSingleLine(label))
+        int textX = 0;
+        int maxMenuLabelWidth = 0;
+        this->getListTextBounds(textX, maxMenuLabelWidth);
+        (void)textX;
+        if (maxMenuLabelWidth <= 0)
             return label;
-
-        int low = 0;
-        int high = static_cast<int>(normalizedName.size());
-        int best = -1;
-        while (low <= high) {
-            const int mid = low + ((high - low) / 2);
-            const std::string candidate = inst::util::shortenString(normalizedName, mid, true) + suffix;
-            if (fitsSingleLine(candidate)) {
-                best = mid;
-                low = mid + 1;
-            } else {
-                high = mid - 1;
-            }
-        }
-
-        if (best < 0)
-            return suffix;
-
-        return inst::util::shortenString(normalizedName, best, true) + suffix;
+        const int maxMenuLabelHeight = this->menu->GetItemSize() - 2;
+        bool overflow = false;
+        label = OverflowText::ClipSingleLinePrefixWithSuffix(
+            normalizedName, suffix, this->listMarqueeOverlayText, maxMenuLabelWidth, maxMenuLabelHeight, &overflow);
+        if (!overflow)
+            return label;
+        if (!label.empty())
+            return label;
+        bool suffixOverflow = false;
+        return OverflowText::ClipSingleLineText(
+            suffix, this->listMarqueeOverlayText, maxMenuLabelWidth, maxMenuLabelHeight, &suffixOverflow);
     }
 
     void shopInstPage::updateListMarquee(bool force)
@@ -1158,7 +1125,7 @@ namespace inst::ui {
         this->listPrevSelectedIndex = selectedIndex;
 
         const auto& item = this->visibleItems[static_cast<std::size_t>(selectedIndex)];
-        const std::string normalizedName = NormalizeSingleLineTitle(item.name);
+        const std::string normalizedName = OverflowText::NormalizeSingleLineText(item.name);
         std::string sizeText = FormatSizeText(item.size);
         std::string suffix = sizeText.empty() ? "" : (" [" + sizeText + "]");
 
@@ -1169,20 +1136,10 @@ namespace inst::ui {
         }
 
         const int itemHeight = this->menu->GetItemSize();
-        const int menuX = this->menu->GetProcessedX();
-        const int menuW = this->menu->GetWidth();
         const int rowY = this->menu->GetProcessedY() + (row * itemHeight);
-        int textX = menuX + 25;
-        if (!this->isInstalledSection() && !this->isSaveSyncSection())
-            textX = menuX + 76;
-        const int maxRowRight = menuX + menuW - 28;
-        const int previewSafeRight = menuX + 860;
-        int maskRight = maxRowRight;
-        if (maskRight > previewSafeRight)
-            maskRight = previewSafeRight;
-        if (maskRight < textX)
-            maskRight = textX;
-        int maskWidth = maskRight - textX;
+        int textX = 0;
+        int maskWidth = 0;
+        this->getListTextBounds(textX, maskWidth);
 
         if (maskWidth <= 0) {
             hideMarquee();

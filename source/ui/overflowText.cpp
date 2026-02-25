@@ -133,7 +133,7 @@ void OverflowText::SetBackgroundColor(pu::ui::Color color)
 
 void OverflowText::SetText(const std::string& text)
 {
-    this->fullText = this->normalizeSingleLine(text);
+    this->fullText = OverflowText::NormalizeSingleLineText(text);
     this->clippedText = this->buildClippedText(this->fullText, this->overflowing);
     this->updateStaticLabel();
     this->hideMarquee(true);
@@ -324,7 +324,46 @@ void OverflowText::Update(bool forceReset)
     }
 }
 
-std::string OverflowText::normalizeSingleLine(const std::string& text) const
+std::vector<std::size_t> OverflowText::BuildUtf8Boundaries(const std::string& text)
+{
+    std::vector<std::size_t> boundaries;
+    boundaries.reserve(text.size() + 1);
+    boundaries.push_back(0);
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c0 = static_cast<unsigned char>(text[i]);
+        std::size_t len = 1;
+        if ((c0 & 0x80) == 0x00) {
+            len = 1;
+        } else if ((c0 & 0xE0) == 0xC0) {
+            if ((i + 1) < text.size()) {
+                const unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+                if ((c1 & 0xC0) == 0x80)
+                    len = 2;
+            }
+        } else if ((c0 & 0xF0) == 0xE0) {
+            if ((i + 2) < text.size()) {
+                const unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+                const unsigned char c2 = static_cast<unsigned char>(text[i + 2]);
+                if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80)
+                    len = 3;
+            }
+        } else if ((c0 & 0xF8) == 0xF0) {
+            if ((i + 3) < text.size()) {
+                const unsigned char c1 = static_cast<unsigned char>(text[i + 1]);
+                const unsigned char c2 = static_cast<unsigned char>(text[i + 2]);
+                const unsigned char c3 = static_cast<unsigned char>(text[i + 3]);
+                if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80)
+                    len = 4;
+            }
+        }
+        i += len;
+        boundaries.push_back(i);
+    }
+    return boundaries;
+}
+
+std::string OverflowText::NormalizeSingleLineText(const std::string& text)
 {
     std::string out;
     out.reserve(text.size());
@@ -351,28 +390,31 @@ std::string OverflowText::normalizeSingleLine(const std::string& text) const
     return out.substr(start, end - start);
 }
 
-std::string OverflowText::buildClippedText(const std::string& text, bool& overflow) const
+std::string OverflowText::ClipSingleLineText(const std::string& text, pu::ui::elm::TextBlock::Ref probeText, int width, int height, bool* overflow)
 {
-    overflow = false;
-    if (this->probeText == nullptr || this->width <= 0 || this->height <= 0)
+    if (overflow != nullptr)
+        *overflow = false;
+    if (probeText == nullptr || width <= 0 || height <= 0)
         return text;
 
     auto fitsSingleLine = [&](const std::string& candidate) {
-        this->probeText->SetText(candidate);
-        return (this->probeText->GetTextWidth() <= this->width)
-            && (this->probeText->GetTextHeight() <= this->height);
+        probeText->SetText(candidate);
+        return (probeText->GetTextWidth() <= width)
+            && (probeText->GetTextHeight() <= height);
     };
 
     if (fitsSingleLine(text))
         return text;
 
-    overflow = true;
+    if (overflow != nullptr)
+        *overflow = true;
+    const auto boundaries = OverflowText::BuildUtf8Boundaries(text);
     int low = 0;
-    int high = static_cast<int>(text.size());
+    int high = static_cast<int>(boundaries.size()) - 1;
     int best = -1;
     while (low <= high) {
         const int mid = low + ((high - low) / 2);
-        const std::string candidate = text.substr(0, static_cast<std::size_t>(mid));
+        const std::string candidate = text.substr(0, boundaries[static_cast<std::size_t>(mid)]);
         if (fitsSingleLine(candidate)) {
             best = mid;
             low = mid + 1;
@@ -381,10 +423,64 @@ std::string OverflowText::buildClippedText(const std::string& text, bool& overfl
         }
     }
 
-    if (best < 0)
+    if (best <= 0)
         return std::string();
 
-    return text.substr(0, static_cast<std::size_t>(best));
+    return text.substr(0, boundaries[static_cast<std::size_t>(best)]);
+}
+
+std::string OverflowText::ClipSingleLinePrefixWithSuffix(const std::string& prefix, const std::string& suffix, pu::ui::elm::TextBlock::Ref probeText, int width, int height, bool* overflow)
+{
+    if (overflow != nullptr)
+        *overflow = false;
+    if (probeText == nullptr || width <= 0 || height <= 0)
+        return prefix + suffix;
+
+    const std::string full = prefix + suffix;
+    auto fitsSingleLine = [&](const std::string& candidate) {
+        probeText->SetText(candidate);
+        return (probeText->GetTextWidth() <= width)
+            && (probeText->GetTextHeight() <= height);
+    };
+    if (fitsSingleLine(full))
+        return full;
+
+    if (overflow != nullptr)
+        *overflow = true;
+    const std::string marker = prefix.empty() ? std::string() : std::string("...");
+    const auto boundaries = OverflowText::BuildUtf8Boundaries(prefix);
+    int low = 0;
+    int high = static_cast<int>(boundaries.size()) - 1;
+    int best = -1;
+    while (low <= high) {
+        const int mid = low + ((high - low) / 2);
+        std::string candidate = prefix.substr(0, boundaries[static_cast<std::size_t>(mid)]);
+        if (!candidate.empty() && !marker.empty())
+            candidate += marker;
+        candidate += suffix;
+        if (fitsSingleLine(candidate)) {
+            best = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    if (best < 0) {
+        bool suffixOverflow = false;
+        return OverflowText::ClipSingleLineText(suffix, probeText, width, height, &suffixOverflow);
+    }
+
+    std::string clipped = prefix.substr(0, boundaries[static_cast<std::size_t>(best)]);
+    if (!clipped.empty() && !marker.empty())
+        clipped += marker;
+    clipped += suffix;
+    return clipped;
+}
+
+std::string OverflowText::buildClippedText(const std::string& text, bool& overflow) const
+{
+    return OverflowText::ClipSingleLineText(text, this->probeText, this->width, this->height, &overflow);
 }
 
 void OverflowText::updateStaticLabel()

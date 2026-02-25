@@ -142,6 +142,7 @@ namespace inst::ui {
             void updateSectionText();
             void updateButtonsText();
             void setButtonsText(const std::string& text);
+            void getListTextBounds(int& textX, int& textWidth) const;
             std::string buildListMenuLabel(const shopInstStuff::ShopItem& item);
             void updateListMarquee(bool force);
             void buildInstalledSection();

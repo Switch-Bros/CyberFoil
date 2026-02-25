@@ -2,6 +2,7 @@
 
 #include <pu/Plutonium>
 #include <string>
+#include <vector>
 
 namespace inst::ui {
 
@@ -13,6 +14,10 @@ class OverflowText {
     public:
         OverflowText(int fontSize, pu::ui::Color textColor);
         PU_SMART_CTOR(OverflowText)
+
+        static std::string NormalizeSingleLineText(const std::string& text);
+        static std::string ClipSingleLineText(const std::string& text, pu::ui::elm::TextBlock::Ref probeText, int width, int height, bool* overflow = nullptr);
+        static std::string ClipSingleLinePrefixWithSuffix(const std::string& prefix, const std::string& suffix, pu::ui::elm::TextBlock::Ref probeText, int width, int height, bool* overflow = nullptr);
 
         // Adds internal render elements to the target layout once.
         void Attach(pu::ui::Layout* layout);
@@ -68,7 +73,7 @@ class OverflowText {
         int marqueePhase = 0;
         int marqueeFadeAlpha = 0;
 
-        std::string normalizeSingleLine(const std::string& text) const;
+        static std::vector<std::size_t> BuildUtf8Boundaries(const std::string& text);
         std::string buildClippedText(const std::string& text, bool& overflow) const;
         void updateStaticLabel();
         void updateFadeHintRects();
