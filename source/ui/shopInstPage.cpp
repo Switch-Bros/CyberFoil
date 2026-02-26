@@ -3550,6 +3550,24 @@ namespace inst::ui {
                 if (!this->isInstalledSection() && !this->isSaveSyncSection() && !this->selectedItems.empty())
                     this->startInstall();
             }
+            if (Down & HidNpadButton_Y) {
+                if (!this->isInstalledSection() && !this->isSaveSyncSection()) {
+                    if (this->selectedItems.size() == this->visibleItems.size()) {
+                        this->drawMenuItems(true);
+                    } else {
+                        for (std::size_t i = 0; i < this->visibleItems.size(); i++) {
+                            const auto& item = this->visibleItems[i];
+                            const bool alreadySelected = std::any_of(this->selectedItems.begin(), this->selectedItems.end(), [&](const auto& selected) {
+                                return selected.url == item.url;
+                            });
+                            if (alreadySelected)
+                                continue;
+                            this->selectTitle(static_cast<int>(i));
+                        }
+                        this->drawMenuItems(false);
+                    }
+                }
+            }
             if (Down & HidNpadButton_X) {
                 this->startShop(true);
             }
