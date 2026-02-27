@@ -220,37 +220,92 @@ namespace tin::network
             THROW_FORMAT("Attempted range request when ranges aren't supported!\n");
         }
 
-        auto writeDataFunc = streamFunc;
+        static constexpr int kMaxRetries = 3;
+        static constexpr u64 kRetryDelayNs = 2000000000ULL; // 2 seconds
 
-        CURL* curl = curl_easy_init();
-        CURLcode rc = (CURLcode)0;
+        size_t bytesReceived = 0;
 
-        if (!curl)
+        // Wrap streamFunc to track how many bytes have been successfully handed off.
+        // bytesReceived accumulates across retries so each retry resumes from the
+        // correct offset without re-delivering already-buffered data.
+        auto trackingFunc = [&](u8* buf, size_t sz) -> size_t {
+            size_t written = streamFunc(buf, sz);
+            bytesReceived += written;
+            return written;
+        };
+
+        for (int attempt = 0; attempt <= kMaxRetries; attempt++)
         {
-            THROW_FORMAT("Failed to initialize curl\n");
+            if (attempt > 0)
+            {
+                LOG_DEBUG("StreamDataRange: retry %d/%d, resuming at offset %zu+%zu\n",
+                    attempt, kMaxRetries, offset, bytesReceived);
+                svcSleepThread(kRetryDelayNs);
+            }
+
+            const size_t currentOffset = offset + bytesReceived;
+            const size_t remaining     = size - bytesReceived;
+
+            if (remaining == 0)
+                return 0;
+
+            CURL* curl = curl_easy_init();
+            if (!curl)
+                THROW_FORMAT("Failed to initialize curl\n");
+
+            std::stringstream ss;
+            ss << currentOffset << "-" << (currentOffset + remaining - 1);
+            auto range = ss.str();
+
+            auto writeDataFunc = std::function<size_t(u8*, size_t)>(trackingFunc);
+
+            curl_easy_setopt(curl, CURLOPT_URL, m_url.c_str());
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, false);
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
+            curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeDataFunc);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &tin::network::HTTPDownload::ParseHTMLData);
+            std::string authValue;
+            ApplyBasicAuth(curl, authValue);
+
+            LOG_DEBUG("GET %s range=%s (attempt %d/%d)\n",
+                m_url.c_str(), range.c_str(), attempt + 1, kMaxRetries + 1);
+            CURLcode rc = curl_easy_perform(curl);
+
+            u64 httpCode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+            LOG_DEBUG("GET %s done: http=%llu rc=%s bytesReceived=%zu/%zu\n",
+                m_url.c_str(), (unsigned long long)httpCode,
+                curl_easy_strerror(rc), bytesReceived, size);
+            curl_easy_cleanup(curl);
+
+            if (httpCode == 206 && rc == CURLE_OK)
+                return 0;
+
+            // Distinguish retriable network errors from fatal ones.
+            // Fatal errors: wrong credentials, resource not found, callback refused data.
+            // No point retrying those.
+            const bool fatal =
+                rc == CURLE_WRITE_ERROR ||     // streamFunc refused data
+                httpCode == 401 ||
+                httpCode == 403 ||
+                httpCode == 404 ||
+                httpCode == 416;               // range not satisfiable
+
+            if (fatal)
+            {
+                LOG_DEBUG("StreamDataRange: fatal error, aborting (http=%llu rc=%s)\n",
+                    (unsigned long long)httpCode, curl_easy_strerror(rc));
+                return 1;
+            }
+
+            LOG_DEBUG("StreamDataRange: retriable error (http=%llu rc=%s), %d retries left\n",
+                (unsigned long long)httpCode, curl_easy_strerror(rc),
+                kMaxRetries - attempt);
         }
 
-        std::stringstream ss;
-        ss << offset << "-" << (offset + size - 1);
-        auto range = ss.str();
-
-        curl_easy_setopt(curl, CURLOPT_URL, m_url.c_str());
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, false);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
-        curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeDataFunc);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &tin::network::HTTPDownload::ParseHTMLData);
-        std::string authValue;
-        ApplyBasicAuth(curl, authValue);
-
-        rc = curl_easy_perform(curl);
-
-        u64 httpCode = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-        curl_easy_cleanup(curl);
-
-        if (httpCode != 206 || rc != CURLE_OK) return 1;
-        return 0;
+        LOG_DEBUG("StreamDataRange: all retries exhausted for %s\n", m_url.c_str());
+        return 1;
     }
 
     // End HTTPDownload
