@@ -69,6 +69,47 @@ namespace inst::ui {
             }
             return labels;
         }
+
+        std::string GetUserAgentProfileLabel(const std::string& mode)
+        {
+            const std::string normalized = inst::config::NormalizeHttpUserAgentMode(mode);
+            if (normalized == "chrome")
+                return "Chrome (Windows)";
+            if (normalized == "safari")
+                return "Safari (iPhone)";
+            if (normalized == "firefox")
+                return "Firefox (Windows)";
+            if (normalized == "custom")
+                return "Custom";
+            return "Default (CyberFoil)";
+        }
+
+        int GetUserAgentProfileChoiceIndex(const std::string& mode)
+        {
+            const std::string normalized = inst::config::NormalizeHttpUserAgentMode(mode);
+            if (normalized == "chrome")
+                return 1;
+            if (normalized == "safari")
+                return 2;
+            if (normalized == "firefox")
+                return 3;
+            if (normalized == "custom")
+                return 4;
+            return 0;
+        }
+
+        std::string GetUserAgentProfileModeFromChoice(int choice)
+        {
+            if (choice == 1)
+                return "chrome";
+            if (choice == 2)
+                return "safari";
+            if (choice == 3)
+                return "firefox";
+            if (choice == 4)
+                return "custom";
+            return "default";
+        }
     }
 
     optionsPage::optionsPage() : Layout::Layout() {
@@ -283,6 +324,7 @@ namespace inst::ui {
             addItem("Active shop: " + inst::util::shortenString(ActiveShopLabel(shops), 42, false), false, false);
             addItem("Memorized shops: " + std::to_string(shops.size()), false, false);
             addItem("Add new shop", false, false);
+            addItem("User-Agent profile: " + GetUserAgentProfileLabel(inst::config::httpUserAgentMode), false, false);
             addItem("options.menu_items.shop_hide_installed"_lang, true, inst::config::shopHideInstalled);
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
             addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
@@ -490,7 +532,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 12, 13, 24, 19, 14, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 14, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
@@ -867,6 +909,52 @@ namespace inst::ui {
 
                     inst::config::SetActiveShop(newShop, true);
                     this->refreshOptions();
+                    break;
+                }
+                case 25: {
+                    const std::vector<std::string> profiles = {
+                        "Default (CyberFoil)",
+                        "Chrome (Windows)",
+                        "Safari (iPhone)",
+                        "Firefox (Windows)",
+                        "Custom"
+                    };
+                    int currentIndex = GetUserAgentProfileChoiceIndex(inst::config::httpUserAgentMode);
+                    if (currentIndex < 0 || currentIndex >= static_cast<int>(profiles.size()))
+                        currentIndex = 0;
+                    const std::string currentLabel = profiles[currentIndex];
+                    int profileChoice = inst::ui::mainApp->CreateShowDialog(
+                        "User-Agent profile",
+                        "Used for file/media downloads. Shop API always uses CyberFoil.",
+                        profiles,
+                        false
+                    );
+                    if (profileChoice < 0 || profileChoice >= static_cast<int>(profiles.size()))
+                        break;
+
+                    std::string mode = GetUserAgentProfileModeFromChoice(profileChoice);
+                    if (mode == "custom") {
+                        std::string customUserAgent = TrimString(inst::util::softwareKeyboard("Enter custom User-Agent", inst::config::httpUserAgent, 300));
+                        if (customUserAgent.empty()) {
+                            inst::ui::mainApp->CreateShowDialog("Invalid User-Agent", "Custom User-Agent cannot be empty.", {"common.ok"_lang}, true);
+                            break;
+                        }
+                        inst::config::httpUserAgent = customUserAgent;
+                    }
+
+                    inst::config::httpUserAgentMode = mode;
+                    inst::config::setConfig();
+                    this->refreshOptions();
+
+                    const std::string newLabel = GetUserAgentProfileLabel(inst::config::httpUserAgentMode);
+                    if (newLabel != currentLabel) {
+                        inst::ui::mainApp->CreateShowDialog(
+                            "User-Agent profile",
+                            "Current profile: " + newLabel,
+                            {"common.ok"_lang},
+                            true
+                        );
+                    }
                     break;
                 }
                 case 12:
