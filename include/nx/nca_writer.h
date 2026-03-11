@@ -32,7 +32,7 @@ class NcaBodyWriter
 public:
 	NcaBodyWriter(const NcmContentId& ncaId, u64 offset, std::shared_ptr<nx::ncm::ContentStorage>& contentStorage);
 	virtual ~NcaBodyWriter();
-	virtual u64 write(const  u8* ptr, u64 sz);
+	virtual void write(const  u8* ptr, u64 sz);
 	
 	bool isOpen() const;
 
@@ -51,7 +51,7 @@ public:
 
 	bool isOpen() const;
 	bool close();
-	u64 write(const  u8* ptr, u64 sz);
+	void write(const  u8* ptr, u64 sz);
 	void flushHeader();
 
 protected:
@@ -59,4 +59,5 @@ protected:
 	std::shared_ptr<nx::ncm::ContentStorage> m_contentStorage;
 	std::vector<u8> m_buffer;
 	std::shared_ptr<NcaBodyWriter> m_writer;
+	bool m_headerFlushed = false;
 };
