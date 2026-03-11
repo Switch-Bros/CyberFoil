@@ -154,7 +154,6 @@ namespace tin::install::nsp
         u64 freq = armGetSystemTickFreq();
         u64 startTime = armGetSystemTick();
         size_t startSizeBuffered = 0;
-        double speed = 0.0;
         double emaSpeed = 0.0;
 
         inst::ui::instPage::setInstBarPerc(0);
@@ -176,9 +175,9 @@ namespace tin::install::nsp
             if (newTime - startTime >= freq * 0.5)
             {
                 size_t newSizeBuffered = bufferedPlaceholderWriter.GetSizeBuffered();
-                double mbBuffered = (newSizeBuffered / 1000000.0) - (startSizeBuffered / 1000000.0);
+                double mbBuffered = (newSizeBuffered / (1024 * 1024)) - (startSizeBuffered / (1024 * 1024));
                 double duration = ((double)(newTime - startTime) / (double)freq);
-                speed =  mbBuffered / duration;
+                double speed =  mbBuffered / duration;
 
                 if (emaSpeed <= 0.0) {
                     emaSpeed = speed;
@@ -195,7 +194,7 @@ namespace tin::install::nsp
 
                 std::string etaText = "--:--";
                 if (emaSpeed > 0.0 && totalSize > sizeBuffered) {
-                    const double remainingMb = (totalSize - sizeBuffered) / 1000000.0;
+                    const double remainingMb = (totalSize - sizeBuffered) / (1024 * 1024);
                     const double etaSecondsF = remainingMb / emaSpeed;
                     if (etaSecondsF < 86400.0) {
                         etaText = FormatEta(static_cast<std::uint64_t>(etaSecondsF));
@@ -205,8 +204,8 @@ namespace tin::install::nsp
                 inst::ui::instPage::setInstInfoText("inst.info_page.downloading"_lang + inst::util::formatUrlString(ncaFileName) + "inst.info_page.at"_lang + FormatOneDecimal(emaSpeed) + " MB/s");
                 inst::ui::instPage::setInstBarPerc((double)downloadProgress);
                 inst::ui::instPage::setProgressDetailText(
-                    "Downloaded " + FormatOneDecimal(sizeBuffered / 1000000.0) + " / " +
-                    FormatOneDecimal(totalSize / 1000000.0) + " MB (" +
+                    "Downloaded " + FormatOneDecimal(sizeBuffered / (1024 * 1024)) + " / " +
+                    FormatOneDecimal(totalSize / (1024 * 1024)) + " MB (" +
                     std::to_string(downloadProgress) + "%) • ETA " + etaText
                 );
             }
