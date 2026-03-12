@@ -65,9 +65,20 @@ namespace tin::network
     class HTTPDownload
     {
         private:
+            struct JbodSegment
+            {
+                std::string url;
+                size_t offset = 0;
+                size_t size = 0;
+                bool openEnded = false;
+            };
+
             std::string m_url;
             HTTPHeader m_header;
             bool m_rangesSupported = false;
+            bool m_isJbod = false;
+            size_t m_jbodSize = 0;
+            std::vector<JbodSegment> m_jbodSegments;
 
             static size_t ParseHTMLData(char* bytes, size_t size, size_t numItems, void* userData);
 

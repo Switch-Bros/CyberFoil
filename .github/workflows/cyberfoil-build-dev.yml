@@ -1,12 +1,12 @@
-name: Build CyberFoil (dev)
+name: Build CyberFoil (development)
 
 on:
   push:
     branches:
-      - DEV
+      - development
   pull_request:
     branches:
-      - DEV
+      - development
 
 permissions:
   contents: read

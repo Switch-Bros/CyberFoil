@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <atomic>
 #include "ui/MainApplication.hpp"
 #include "ui/instPage.hpp"
 #include "util/util.hpp"
@@ -12,6 +13,7 @@
 namespace inst::ui {
     extern MainApplication *mainApp;
     static pu::ui::Layout::Ref lastLayoutBeforeInstall;
+    static std::atomic<bool> g_installCancelRequested{false};
 
     constexpr int kInstallIconSize = 256;
     constexpr int kInstallIconX = (1280 - kInstallIconSize) / 2;
@@ -223,13 +225,29 @@ namespace inst::ui {
         mainApp->instpage->installInfoText->SetText("");
         mainApp->instpage->installBar->SetProgress(0);
         mainApp->instpage->installBar->SetVisible(false);
-        mainApp->instpage->hintText->SetVisible(false);
+        mainApp->instpage->hintText->SetText(" Cancel");
+        mainApp->instpage->hintText->SetX(1280 - 10 - mainApp->instpage->hintText->GetTextWidth());
+        mainApp->instpage->hintText->SetVisible(true);
+        mainApp->instpage->bottomHintSegments = BuildBottomHintSegments(mainApp->instpage->hintText->GetText(), mainApp->instpage->hintText->GetX(), 20);
         mainApp->instpage->progressText->SetVisible(false);
         mainApp->instpage->progressDetailText->SetVisible(false);
         mainApp->instpage->installIconImage->SetVisible(false);
         mainApp->instpage->awooImage->SetVisible(!inst::config::gayMode);
+        g_installCancelRequested.store(false);
         mainApp->LoadLayout(mainApp->instpage);
         mainApp->CallForRender();
+    }
+
+    void instPage::requestInstallCancel(){
+        g_installCancelRequested.store(true);
+    }
+
+    bool instPage::isInstallCancelRequested(){
+        return g_installCancelRequested.load();
+    }
+
+    void instPage::clearInstallCancel(){
+        g_installCancelRequested.store(false);
     }
 
     void instPage::onInput(u64 Down, u64 Up, u64 Held, pu::ui::Touch Pos) {
@@ -239,6 +257,28 @@ namespace inst::ui {
         }
         inst::util::playNavigationClickIfNeeded(Down);
         if (Down & HidNpadButton_B) {
+            if (this->installBar->IsVisible()) {
+                if (isInstallCancelRequested()) {
+                    setInstInfoText("Cancelling install...");
+                    return;
+                }
+                const int choice = mainApp->CreateShowDialog(
+                    "Cancel install?",
+                    "Stop the current install and clean up partial data?",
+                    {"Cancel Install", "Go Back"},
+                    false
+                );
+                if (choice == 0) {
+                    requestInstallCancel();
+                    setInstInfoText("Cancelling install...");
+                }
+                return;
+            }
+            if (!this->hintText->IsVisible()) {
+                requestInstallCancel();
+                setInstInfoText("Cancelling install...");
+                return;
+            }
             if (inst::mtp::IsInstallServerRunning()) {
                 inst::mtp::StopInstallServer();
             }

@@ -55,6 +55,9 @@ namespace tin::install::xci
             inst::ui::instPage::setInstInfoText("inst.info_page.top_info0"_lang + ncaFileName + "...");
             inst::ui::instPage::setInstBarPerc(0);
             while (fileOff < ncaSize) {
+                if (inst::ui::instPage::isInstallCancelRequested()) {
+                    THROW_FORMAT("Installation canceled.");
+                }
                 progress = (float)fileOff / (float)ncaSize;
 
                 if (fileOff % (0x400000 * 3) == 0) {
@@ -72,6 +75,7 @@ namespace tin::install::xci
             inst::ui::instPage::setInstBarPerc(100);
         } catch (std::exception& e) {
             LOG_DEBUG("something went wrong: %s\n", e.what());
+            throw;
         }
 
         writer.close();

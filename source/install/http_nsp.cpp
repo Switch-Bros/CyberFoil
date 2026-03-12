@@ -40,6 +40,22 @@ namespace inst::ui { extern MainApplication *mainApp; }
 namespace tin::install::nsp
 {
     namespace {
+        std::string DeriveDisplayNameFromUrl(const std::string& url)
+        {
+            const std::size_t fragmentPos = url.find('#');
+            if (fragmentPos != std::string::npos && fragmentPos + 1 < url.size()) {
+                const std::string fragment = url.substr(fragmentPos + 1);
+                std::string decoded = inst::util::formatUrlString("http://dummy/" + fragment);
+                if (!decoded.empty())
+                    return decoded;
+            }
+
+            std::string fromPath = inst::util::formatUrlString(url);
+            if (!fromPath.empty())
+                return fromPath;
+            return "content";
+        }
+
         std::string FormatOneDecimal(double value)
         {
             char buf[32];
@@ -70,7 +86,7 @@ namespace tin::install::nsp
     bool stopThreadsHttpNsp;
 
     HTTPNSP::HTTPNSP(std::string url) :
-        m_download(url)
+        m_download(url), m_displayName(DeriveDisplayNameFromUrl(url))
     {
 
     }
@@ -93,38 +109,55 @@ namespace tin::install::nsp
     int CurlStreamFunc(void* in)
     {
         StreamFuncArgs* args = reinterpret_cast<StreamFuncArgs*>(in);
-
-        auto streamFunc = [&](u8* streamBuf, size_t streamBufSize) -> size_t
-        {
-            while (true)
+        try {
+            auto streamFunc = [&](u8* streamBuf, size_t streamBufSize) -> size_t
             {
-                if (args->bufferedPlaceholderWriter->CanAppendData(streamBufSize))
-                    break;
-            }
+                if (inst::ui::instPage::isInstallCancelRequested())
+                    return 0;
+                while (true)
+                {
+                    if (inst::ui::instPage::isInstallCancelRequested())
+                        return 0;
+                    if (args->bufferedPlaceholderWriter->CanAppendData(streamBufSize))
+                        break;
+                }
 
-            args->bufferedPlaceholderWriter->AppendData(streamBuf, streamBufSize);
-            return streamBufSize;
-        };
+                args->bufferedPlaceholderWriter->AppendData(streamBuf, streamBufSize);
+                return streamBufSize;
+            };
 
-        auto retryConfirmFunc = [&]() -> bool {
-            args->retryConfirm.pending.store(true);
-            while (args->retryConfirm.pending.load())
-                svcSleepThread(50 * 1000 * 1000ULL); 
-            return args->retryConfirm.approved.load();
-        };
+            auto retryConfirmFunc = [&]() -> bool {
+                args->retryConfirm.pending.store(true);
+                while (args->retryConfirm.pending.load() && !stopThreadsHttpNsp)
+                    svcSleepThread(50 * 1000 * 1000ULL);
+                return !stopThreadsHttpNsp && args->retryConfirm.approved.load();
+            };
 
-        if (args->download->StreamDataRange(args->pfs0Offset, args->ncaSize, streamFunc, retryConfirmFunc) == 1) stopThreadsHttpNsp = true;
+            if (args->download->StreamDataRange(args->pfs0Offset, args->ncaSize, streamFunc, retryConfirmFunc) == 1)
+                stopThreadsHttpNsp = true;
+        }
+        catch (...) {
+            stopThreadsHttpNsp = true;
+        }
         return 0;
     }
 
     int PlaceholderWriteFunc(void* in)
     {
         StreamFuncArgs* args = reinterpret_cast<StreamFuncArgs*>(in);
-
-        while (!args->bufferedPlaceholderWriter->IsPlaceholderComplete() && !stopThreadsHttpNsp)
-        {
-            if (args->bufferedPlaceholderWriter->CanWriteSegmentToPlaceholder())
-                args->bufferedPlaceholderWriter->WriteSegmentToPlaceholder();
+        try {
+            while (!args->bufferedPlaceholderWriter->IsPlaceholderComplete() && !stopThreadsHttpNsp)
+            {
+                if (inst::ui::instPage::isInstallCancelRequested()) {
+                    stopThreadsHttpNsp = true;
+                    break;
+                }
+                if (args->bufferedPlaceholderWriter->CanWriteSegmentToPlaceholder())
+                    args->bufferedPlaceholderWriter->WriteSegmentToPlaceholder();
+            }
+        }
+        catch (...) {
+            stopThreadsHttpNsp = true;
         }
 
         return 0;
@@ -134,8 +167,9 @@ namespace tin::install::nsp
     {
         const PFS0FileEntry* fileEntry = this->GetFileEntryByNcaId(placeholderId);
         std::string ncaFileName = this->GetFileEntryName(fileEntry);
+        const std::string displayFileName = ncaFileName.empty() ? m_displayName : ncaFileName;
 
-        LOG_DEBUG("Retrieving %s\n", ncaFileName.c_str());
+        LOG_DEBUG("Retrieving %s\n", displayFileName.c_str());
         size_t ncaSize = fileEntry->fileSize;
 
         tin::data::BufferedPlaceholderWriter bufferedPlaceholderWriter(contentStorage, placeholderId, ncaSize);
@@ -159,6 +193,13 @@ namespace tin::install::nsp
         inst::ui::instPage::setInstBarPerc(0);
         while (!bufferedPlaceholderWriter.IsBufferDataComplete() && !stopThreadsHttpNsp)
         {
+            if (inst::ui::instPage::isInstallCancelRequested()) {
+                args.retryConfirm.approved.store(false);
+                args.retryConfirm.pending.store(false);
+                stopThreadsHttpNsp = true;
+                break;
+            }
+
             if (args.retryConfirm.pending.load())
             {
                 int choice = inst::ui::mainApp->CreateShowDialog(
@@ -169,7 +210,6 @@ namespace tin::install::nsp
                 args.retryConfirm.approved.store(choice == 0);
                 args.retryConfirm.pending.store(false);
             }
-
             u64 newTime = armGetSystemTick();
 
             if (newTime - startTime >= freq * 0.5)
@@ -201,7 +241,7 @@ namespace tin::install::nsp
                     }
                 }
 
-                inst::ui::instPage::setInstInfoText("inst.info_page.downloading"_lang + inst::util::formatUrlString(ncaFileName) + "inst.info_page.at"_lang + FormatOneDecimal(emaSpeed) + " MB/s");
+                inst::ui::instPage::setInstInfoText("inst.info_page.downloading"_lang + inst::util::formatUrlString(displayFileName) + "inst.info_page.at"_lang + FormatOneDecimal(emaSpeed) + " MB/s");
                 inst::ui::instPage::setInstBarPerc((double)downloadProgress);
                 inst::ui::instPage::setProgressDetailText(
                     "Downloaded " + FormatOneDecimal(sizeBuffered / (1024 * 1024)) + " / " +
@@ -213,10 +253,16 @@ namespace tin::install::nsp
         inst::ui::instPage::setInstBarPerc(100);
         inst::ui::instPage::setProgressDetailText("Downloaded 100% • Verifying and installing...");
 
-        inst::ui::instPage::setInstInfoText("inst.info_page.top_info0"_lang + ncaFileName + "...");
+        inst::ui::instPage::setInstInfoText("inst.info_page.top_info0"_lang + displayFileName + "...");
         inst::ui::instPage::setInstBarPerc(0);
         while (!bufferedPlaceholderWriter.IsPlaceholderComplete() && !stopThreadsHttpNsp)
         {
+            if (inst::ui::instPage::isInstallCancelRequested()) {
+                args.retryConfirm.approved.store(false);
+                args.retryConfirm.pending.store(false);
+                stopThreadsHttpNsp = true;
+                break;
+            }
             int installProgress = (int)(((double)bufferedPlaceholderWriter.GetSizeWrittenToPlaceholder() / (double)bufferedPlaceholderWriter.GetTotalDataSize()) * 100.0);
 
             inst::ui::instPage::setInstBarPerc((double)installProgress);
@@ -231,6 +277,8 @@ namespace tin::install::nsp
 
         thrd_join(curlThread, NULL);
         thrd_join(writeThread, NULL);
+        if (inst::ui::instPage::isInstallCancelRequested())
+            THROW_FORMAT("Installation canceled.");
         if (stopThreadsHttpNsp) THROW_FORMAT(("inst.net.transfer_interput"_lang).c_str());
     }
 
