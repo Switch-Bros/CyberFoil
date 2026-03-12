@@ -86,7 +86,7 @@ namespace tin::network
             HTTPDownload(std::string url);
     
             void BufferDataRange(void* buffer, size_t offset, size_t size, std::function<void (size_t sizeRead)> progressFunc);
-            int StreamDataRange(size_t offset, size_t size, std::function<size_t (u8* bytes, size_t size)> streamFunc);
+            int StreamDataRange(size_t offset, size_t size, std::function<size_t (u8* bytes, size_t size)> streamFunc, std::function<bool()> retryConfirmFunc = nullptr);
     };
 
     void SetBasicAuth(const std::string& user, const std::string& pass);

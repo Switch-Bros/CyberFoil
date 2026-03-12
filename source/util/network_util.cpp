@@ -471,7 +471,7 @@ namespace tin::network
         }
     }
 
-    int HTTPDownload::StreamDataRange(size_t offset, size_t size, std::function<size_t (u8* bytes, size_t size)> streamFunc)
+    int HTTPDownload::StreamDataRange(size_t offset, size_t size, std::function<size_t (u8* bytes, size_t size)> streamFunc, std::function<bool()> retryConfirmFunc)
     {
         if (size == 0)
             return 0;
@@ -479,13 +479,73 @@ namespace tin::network
         if (!m_rangesSupported)
             THROW_FORMAT("Attempted range request when ranges aren't supported!\n");
 
-        if (!m_isJbod)
+        static constexpr int kMaxRetries = 3;
+        static constexpr u64 kRetryDelayNs = 2000000000ULL; // 2 seconds
+
+        auto streamWithRetry = [&](const std::string& url, size_t requestOffset, size_t requestSize) -> int
         {
-            const int rc = StreamHttpRangeForUrl(m_url, offset, size, streamFunc);
-            if (rc != 0)
-                THROW_FORMAT("HTTP range request failed (rc=%d)\n", rc);
-            return 0;
-        }
+            size_t bytesReceived = 0;
+
+            auto trackingFunc = [&](u8* buf, size_t sz) -> size_t {
+                size_t written = streamFunc(buf, sz);
+                bytesReceived += written;
+                return written;
+            };
+
+            while (true)
+            {
+                for (int attempt = 0; attempt <= kMaxRetries; attempt++)
+                {
+                    if (attempt > 0)
+                    {
+                        LOG_DEBUG("StreamDataRange: retry %d/%d, resuming at offset %zu+%zu\n",
+                            attempt, kMaxRetries, requestOffset, bytesReceived);
+                        svcSleepThread(kRetryDelayNs);
+                    }
+
+                    const size_t currentOffset = requestOffset + bytesReceived;
+                    const size_t remaining = requestSize - bytesReceived;
+
+                    if (remaining == 0)
+                        return 0;
+
+                    const int rc = StreamHttpRangeForUrl(url, currentOffset, remaining, trackingFunc);
+                    if (rc == 0)
+                        return 0;
+
+                    const bool fatal =
+                        rc == 1999 ||
+                        rc == 401 ||
+                        rc == 403 ||
+                        rc == 404 ||
+                        rc == 416 ||
+                        rc == 1000 + CURLE_WRITE_ERROR;
+
+                    if (fatal)
+                    {
+                        LOG_DEBUG("StreamDataRange: fatal error, aborting (url=%s rc=%d)\n",
+                            url.c_str(), rc);
+                        return 1;
+                    }
+
+                    LOG_DEBUG("StreamDataRange: retriable error (url=%s rc=%d), %d retries left\n",
+                        url.c_str(), rc, kMaxRetries - attempt);
+                }
+
+                LOG_DEBUG("StreamDataRange: auto-retries exhausted for %s\n", url.c_str());
+                if (retryConfirmFunc && retryConfirmFunc())
+                {
+                    LOG_DEBUG("StreamDataRange: user requested another retry cycle for %s\n", url.c_str());
+                    continue;
+                }
+                break;
+            }
+
+            return 1;
+        };
+
+        if (!m_isJbod)
+            return streamWithRetry(m_url, offset, size);
 
         size_t globalOffset = offset;
         size_t remaining = size;
@@ -521,10 +581,9 @@ namespace tin::network
             }
             const size_t readNow = std::min(remaining, chunkRemaining);
 
-            const int rc = StreamHttpRangeForUrl(it->url, localOffset, readNow, streamFunc);
-            if (rc != 0) {
-                THROW_FORMAT("JBOD part range request failed (rc=%d)\n", rc);
-            }
+            const int rc = streamWithRetry(it->url, localOffset, readNow);
+            if (rc != 0)
+                return rc;
 
             globalOffset += readNow;
             remaining -= readNow;

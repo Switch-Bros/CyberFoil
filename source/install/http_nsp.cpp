@@ -22,6 +22,7 @@ SOFTWARE.
 
 #include "install/http_nsp.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <switch.h>
 #include <threads.h>
@@ -32,6 +33,9 @@ SOFTWARE.
 #include "util/util.hpp"
 #include "util/lang.hpp"
 #include "ui/instPage.hpp"
+#include "ui/MainApplication.hpp"
+
+namespace inst::ui { extern MainApplication *mainApp; }
 
 namespace tin::install::nsp
 {
@@ -87,12 +91,19 @@ namespace tin::install::nsp
 
     }
 
+    struct RetryConfirmState
+    {
+        std::atomic<bool> pending{false};
+        std::atomic<bool> approved{false};
+    };
+
     struct StreamFuncArgs
     {
         tin::network::HTTPDownload* download;
         tin::data::BufferedPlaceholderWriter* bufferedPlaceholderWriter;
         u64 pfs0Offset;
         u64 ncaSize;
+        RetryConfirmState retryConfirm;
     };
 
     int CurlStreamFunc(void* in)
@@ -115,7 +126,14 @@ namespace tin::install::nsp
                 return streamBufSize;
             };
 
-            if (args->download->StreamDataRange(args->pfs0Offset, args->ncaSize, streamFunc) == 1)
+            auto retryConfirmFunc = [&]() -> bool {
+                args->retryConfirm.pending.store(true);
+                while (args->retryConfirm.pending.load() && !stopThreadsHttpNsp)
+                    svcSleepThread(50 * 1000 * 1000ULL);
+                return !stopThreadsHttpNsp && args->retryConfirm.approved.load();
+            };
+
+            if (args->download->StreamDataRange(args->pfs0Offset, args->ncaSize, streamFunc, retryConfirmFunc) == 1)
                 stopThreadsHttpNsp = true;
         }
         catch (...) {
@@ -170,24 +188,36 @@ namespace tin::install::nsp
         u64 freq = armGetSystemTickFreq();
         u64 startTime = armGetSystemTick();
         size_t startSizeBuffered = 0;
-        double speed = 0.0;
         double emaSpeed = 0.0;
 
         inst::ui::instPage::setInstBarPerc(0);
         while (!bufferedPlaceholderWriter.IsBufferDataComplete() && !stopThreadsHttpNsp)
         {
             if (inst::ui::instPage::isInstallCancelRequested()) {
+                args.retryConfirm.approved.store(false);
+                args.retryConfirm.pending.store(false);
                 stopThreadsHttpNsp = true;
                 break;
+            }
+
+            if (args.retryConfirm.pending.load())
+            {
+                int choice = inst::ui::mainApp->CreateShowDialog(
+                    "inst.net.retry.title"_lang,
+                    "inst.net.retry.desc"_lang,
+                    {"inst.net.retry.yes"_lang, "inst.net.retry.no"_lang},
+                    true);
+                args.retryConfirm.approved.store(choice == 0);
+                args.retryConfirm.pending.store(false);
             }
             u64 newTime = armGetSystemTick();
 
             if (newTime - startTime >= freq * 0.5)
             {
                 size_t newSizeBuffered = bufferedPlaceholderWriter.GetSizeBuffered();
-                double mbBuffered = (newSizeBuffered / 1000000.0) - (startSizeBuffered / 1000000.0);
+                double mbBuffered = (newSizeBuffered / (1024 * 1024)) - (startSizeBuffered / (1024 * 1024));
                 double duration = ((double)(newTime - startTime) / (double)freq);
-                speed =  mbBuffered / duration;
+                double speed =  mbBuffered / duration;
 
                 if (emaSpeed <= 0.0) {
                     emaSpeed = speed;
@@ -204,16 +234,18 @@ namespace tin::install::nsp
 
                 std::string etaText = "--:--";
                 if (emaSpeed > 0.0 && totalSize > sizeBuffered) {
-                    const double remainingMb = (totalSize - sizeBuffered) / 1000000.0;
-                    const auto etaSeconds = static_cast<std::uint64_t>(remainingMb / emaSpeed);
-                    etaText = FormatEta(etaSeconds);
+                    const double remainingMb = (totalSize - sizeBuffered) / (1024 * 1024);
+                    const double etaSecondsF = remainingMb / emaSpeed;
+                    if (etaSecondsF < 86400.0) {
+                        etaText = FormatEta(static_cast<std::uint64_t>(etaSecondsF));
+                    }
                 }
 
                 inst::ui::instPage::setInstInfoText("inst.info_page.downloading"_lang + inst::util::formatUrlString(displayFileName) + "inst.info_page.at"_lang + FormatOneDecimal(emaSpeed) + " MB/s");
                 inst::ui::instPage::setInstBarPerc((double)downloadProgress);
                 inst::ui::instPage::setProgressDetailText(
-                    "Downloaded " + FormatOneDecimal(sizeBuffered / 1000000.0) + " / " +
-                    FormatOneDecimal(totalSize / 1000000.0) + " MB (" +
+                    "Downloaded " + FormatOneDecimal(sizeBuffered / (1024 * 1024)) + " / " +
+                    FormatOneDecimal(totalSize / (1024 * 1024)) + " MB (" +
                     std::to_string(downloadProgress) + "%) • ETA " + etaText
                 );
             }
@@ -226,6 +258,8 @@ namespace tin::install::nsp
         while (!bufferedPlaceholderWriter.IsPlaceholderComplete() && !stopThreadsHttpNsp)
         {
             if (inst::ui::instPage::isInstallCancelRequested()) {
+                args.retryConfirm.approved.store(false);
+                args.retryConfirm.pending.store(false);
                 stopThreadsHttpNsp = true;
                 break;
             }
