@@ -431,20 +431,9 @@ bool NcaWriter::close()
      }
      else if(m_buffer.size())
      {
-          if(!m_headerFlushed)
+          if(isOpen())
           {
-               if (m_buffer.size() == NCA_HEADER_SIZE && isOpen())
-               {
-                    flushHeader();
-               }
-          }
-          else if (isOpen())
-          {
-               // We already flushed the NCA header. Any remaining bytes here are
-               // body bytes buffered while waiting to classify the payload type.
-               m_writer = std::shared_ptr<NcaBodyWriter>(new NcaBodyWriter(m_ncaId, NCA_HEADER_SIZE, m_contentStorage));
-               m_writer->write(m_buffer.data(), m_buffer.size());
-               m_writer = NULL;
+               flushHeader();
           }
 
           m_buffer.clear(); // reclaim ok
