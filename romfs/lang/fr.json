@@ -7,7 +7,7 @@
             "shop": "Installer depuis eShop",
             "usb": "Installer via NS-USBloader",
             "mtp": "Installer via MTP",
-            "backup": "Sauvegarder les donnees de sauvegarde",
+            "backup": "Sauvegarder les donnees de jeu",
             "sig": "Gérer les sigpatches",
             "set": " Paramètres",
             "exit": " Quitter"
@@ -75,6 +75,12 @@
             "top_info1": "En attente d'une connexion... L'adresse IP de votre switch est : ",
             "failed": "Echec de l'installation à distance !",
             "transfer_interput": "Une erreur s'est produite pendant le transfert des données. Vérifiez votre connexion réseau.",
+            "retry": {
+                "title": "Echec du téléchargement",
+                "desc": "Toutes les tentatives ont échoué. Voulez-vous réessayer ?",
+                "yes": "Réessayer",
+                "no": "Abandonner"
+            },
             "source_string": " à partir du réseau local",
             "buttons": " Installer via Internet     Aide     Annuler",
             "buttons1": " Sélectionnez un fichier     Tout sélectionner    Installer un/des fichier(s)     Annuler"

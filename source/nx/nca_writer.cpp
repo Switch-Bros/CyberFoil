@@ -24,6 +24,7 @@ SOFTWARE.
 #include "util/error.hpp"
 #include <zstd.h>
 #include <string.h>
+#include <memory>
 #include "util/crypto.hpp"
 #include "util/config.hpp"
 #include "util/title_util.hpp"
@@ -45,16 +46,13 @@ NcaBodyWriter::~NcaBodyWriter()
 {
 }
 
-u64 NcaBodyWriter::write(const  u8* ptr, u64 sz)
+void NcaBodyWriter::write(const  u8* ptr, u64 sz)
 {
      if(isOpen())
      {
           m_contentStorage->WritePlaceholder(*(NcmPlaceHolderId*)&m_ncaId, m_offset, (void*)ptr, sz);
           m_offset += sz;
-          return sz;
      }
-
-     return 0;
 }
 
 bool NcaBodyWriter::isOpen() const
@@ -67,6 +65,7 @@ class NczHeader
 {
 public:
      static const u64 MAGIC = 0x4E544345535A434E;
+     static constexpr size_t MIN_HEADER_SIZE = sizeof(u64) * 2; // magic + sectionCount
 
      class Section
      {
@@ -145,6 +144,8 @@ protected:
 class NczBodyWriter : public NcaBodyWriter
 {
 public:
+     static const u64 NCZ_BODY_CHUNK_SIZE = 0x1000000; // 16MB
+
      NczBodyWriter(const NcmContentId& ncaId, u64 offset, std::shared_ptr<nx::ncm::ContentStorage>& contentStorage) : NcaBodyWriter(ncaId, offset, contentStorage)
      {
           buffIn = malloc(buffInSize);
@@ -157,14 +158,9 @@ public:
      {
           close();
 
-          for (auto& i : sections)
-          {
-               if (i)
-               {
-                    delete i;
-                    i = NULL;
-               }
-          }
+          currentContext.reset(); // unique_ptr handles delete
+          currentSectionIdx = (u64)-1;
+          sections.clear(); // reclaim ok
 
           if (dctx)
           {
@@ -175,9 +171,11 @@ public:
 
      bool close()
      {
+          // Handle dangling buffer < NCZ_BODY_CHUNK_SIZE
           if (this->m_buffer.size())
           {
                processChunk(m_buffer.data(), m_buffer.size());
+               m_buffer.clear(); // reclaim ok
           }
 
           encrypt(m_deflateBuffer.data(), m_deflateBuffer.size(), m_offset);
@@ -202,13 +200,22 @@ public:
           return true;
      }
 
-     NczHeader::SectionContext* section(u64 offset)
+     // Find the section for the specified offset
+     // and return a SectionContext for it
+     NczHeader::SectionContext* getSectionContextForOffset(u64 offset)
      {
           for (u64 i = 0; i < sections.size(); i++)
           {
-               if (offset >= sections[i]->offset && offset < sections[i]->offset + sections[i]->size)
+               if (offset >= sections[i].offset && offset < sections[i].offset + sections[i].size)
                {
-                    return sections[i];
+                    // Recreate context only if different section
+                    if (i != currentSectionIdx) // -1 => true
+                    {
+                         // unique_ptr handles delete + replace
+                         currentContext = std::make_unique<NczHeader::SectionContext>(sections[i]);
+                         currentSectionIdx = i;
+                    }
+                    return currentContext.get(); // unique_ptr lends its pointer
                }
           }
           return NULL;
@@ -219,9 +226,9 @@ public:
           u64 next = std::numeric_limits<u64>::max();
           for (u64 i = 0; i < sections.size(); i++)
           {
-               if (sections[i]->offset > offset && sections[i]->offset < next)
+               if (sections[i].offset > offset && sections[i].offset < next)
                {
-                    next = sections[i]->offset;
+                    next = sections[i].offset;
                }
           }
           return next;
@@ -234,7 +241,7 @@ public:
 
           while (start < end)
           {
-               auto* s = section(offset);
+               NczHeader::SectionContext* s = getSectionContextForOffset(offset);
                u64 chunk = sz;
 
                if (s)
@@ -287,7 +294,7 @@ public:
                     }
 
                     size_t len = output.pos;
-                    u8* p = (u8*)buffOut;                         
+                    u8* p = (u8*)buffOut;
 
                     while(len)
                     {
@@ -313,69 +320,80 @@ public:
           return 1;
      }
 
-     u64 write(const  u8* ptr, u64 sz) override
+     void write(const  u8* ptr, u64 sz) override
      {
+          if (!sz) return; // no data
+
           if (!m_sectionsInitialized)
           {
-               if (!m_buffer.size())
+               // Need to buffer enough to get the section count
+               // to compute the total size of the header.
+               if (m_buffer.size() < NczHeader::MIN_HEADER_SIZE)
                {
-                    append(m_buffer, ptr, sizeof(u64)*2);
-                    ptr += sizeof(u64) * 2;
-                    sz -= sizeof(u64) * 2;
-               }
-
-               auto header = (NczHeader*)m_buffer.data();
-
-               if (m_buffer.size() + sz > header->size())
-               {
-                    u64 remainder = header->size() - m_buffer.size();
+                    const u64 remainder = std::min(sz, NczHeader::MIN_HEADER_SIZE - m_buffer.size());
                     append(m_buffer, ptr, remainder);
                     ptr += remainder;
                     sz -= remainder;
                }
-               else
+
+               if (m_buffer.size() < NczHeader::MIN_HEADER_SIZE)
                {
-                    append(m_buffer, ptr, sz);
-                    ptr += sz;
-                    sz = 0;
+                    // assert sz == 0
+                    return;
                }
 
+               // assert m_buffer.size() == NczHeader::MIN_HEADER_SIZE
+
+               auto header = (NczHeader*)m_buffer.data();
+               const u64 header_size = header->size(); // Compute once
+
+               // Need to buffer the rest of the header before
+               // we can extract the sections
+               if (m_buffer.size() < header_size)
+               {
+                    const u64 remainder = std::min(sz, header_size - m_buffer.size());
+                    append(m_buffer, ptr, remainder);
+                    ptr += remainder;
+                    sz -= remainder;
+               }
+
+               if (m_buffer.size() < header_size)
+               {
+                    // assert sz == 0
+                    return;
+               }
+
+               // assert m_buffer.size() == header_size
+
+               // Now we can initialize the sections
                header = (NczHeader*)m_buffer.data();
 
-               if (m_buffer.size() == header->size())
+               for (u64 i = 0; i < header->sectionCount(); i++)
                {
-                    for (u64 i = 0; i < header->sectionCount(); i++)
-                    {
-                         sections.push_back(new NczHeader::SectionContext(header->section(i)));
-                    }
-
-                    m_sectionsInitialized = true;
-                    m_buffer.resize(0);
+                    sections.push_back(header->section(i));
                }
+
+               m_sectionsInitialized = true;
+               m_buffer.resize(0);
           }
 
           while (sz)
           {
-               if (m_buffer.size() + sz >= 0x1000000)
+               // Need to buffer each chunk before processing
+               if (m_buffer.size() < NCZ_BODY_CHUNK_SIZE)
                {
-                    u64 chunk = 0x1000000 - m_buffer.size();
-                    append(m_buffer, ptr, chunk);
+                    const u64 remainder = std::min(sz, NCZ_BODY_CHUNK_SIZE - m_buffer.size());
+                    append(m_buffer, ptr, remainder);
+                    ptr += remainder;
+                    sz -= remainder;
+               }
 
+               if (m_buffer.size() == NCZ_BODY_CHUNK_SIZE)
+               {
                     processChunk(m_buffer.data(), m_buffer.size());
                     m_buffer.resize(0);
-
-                    sz -= chunk;
-                    ptr += chunk;
                }
-               else
-               {
-                    append(m_buffer, ptr, sz);
-                    sz = 0;
-               }
-
           }
-
-          return sz;
      }
 
      size_t const buffInSize = ZSTD_DStreamInSize();
@@ -391,7 +409,9 @@ public:
 
      bool m_sectionsInitialized = false;
 
-     std::vector<NczHeader::SectionContext*> sections;
+     std::vector<NczHeader::Section> sections; // Store section data without crypto contexts
+     std::unique_ptr<NczHeader::SectionContext> currentContext; // Crypto context for current section
+     u64 currentSectionIdx = (u64)-1; // Track which section the context is for
 };
 
 NcaWriter::NcaWriter(const NcmContentId& ncaId, std::shared_ptr<nx::ncm::ContentStorage>& contentStorage) : m_ncaId(ncaId), m_contentStorage(contentStorage), m_writer(NULL)
@@ -416,7 +436,7 @@ bool NcaWriter::close()
                flushHeader();
           }
 
-          m_buffer.resize(0);
+          m_buffer.clear(); // reclaim ok
      }
      m_contentStorage = NULL;
      return true;
@@ -427,63 +447,86 @@ bool NcaWriter::isOpen() const
      return (bool)m_contentStorage;
 }
 
-u64 NcaWriter::write(const  u8* ptr, u64 sz)
+void NcaWriter::write(const  u8* ptr, u64 sz)
 {
-     if (m_buffer.size() < NCA_HEADER_SIZE)
+     if (!sz) return; // no data
+
+     if (!m_headerFlushed)
      {
-          if (m_buffer.size() + sz > NCA_HEADER_SIZE)
+          // Need to buffer the full header
+          // before we can flush it
+          if (m_buffer.size() < NCA_HEADER_SIZE)
           {
-               u64 remainder = NCA_HEADER_SIZE - m_buffer.size();
+               const u64 remainder = std::min(sz, NCA_HEADER_SIZE - m_buffer.size());
                append(m_buffer, ptr, remainder);
 
                ptr += remainder;
                sz -= remainder;
           }
-          else
+
+          if (m_buffer.size() < NCA_HEADER_SIZE)
           {
-               append(m_buffer, ptr, sz);
-               ptr += sz;
-               sz = 0;
+               // assert sz == 0
+               return;
           }
 
-          if (m_buffer.size() == NCA_HEADER_SIZE)
-          {
-               flushHeader();
-          }
+          // assert m_buffer.size() == NCA_HEADER_SIZE
+
+          // Now we can flush the header
+          flushHeader();
+          m_headerFlushed = true;
+          m_buffer.resize(0);
      }
 
-     if (sz)
+     if (!sz) return; // no data
+
+     if (!m_writer)
      {
-          if (!m_writer)
+          const u64 header_size = sizeof(NczHeader::MAGIC);
+
+          // Need to buffer enough to identify magic headers
+          if (m_buffer.size() < header_size)
           {
-               if (sz >= sizeof(NczHeader::MAGIC))
-               {
-                    if (*(u64*)ptr == NczHeader::MAGIC)
-                    {
-                         m_writer = std::shared_ptr<NcaBodyWriter>(new NczBodyWriter(m_ncaId, m_buffer.size(), m_contentStorage));
-                    }
-                    else
-                    {
-                         m_writer = std::shared_ptr<NcaBodyWriter>(new NcaBodyWriter(m_ncaId, m_buffer.size(), m_contentStorage));
-                    }
-               }
-               else
-               {
-                    THROW_FORMAT("not enough data to read ncz header");
-               }
+               const u64 remainder = std::min(sz, header_size - m_buffer.size());
+               append(m_buffer, ptr, remainder);
+
+               ptr += remainder;
+               sz -= remainder;
           }
 
-          if(m_writer)
+          if (m_buffer.size() < header_size) {
+               // assert sz == 0
+               return;
+          }
+
+          // assert m_buffer.size() == header_size
+
+          u64 magic = *(u64*)m_buffer.data();
+
+          if (magic == NczHeader::MAGIC)
           {
-               m_writer->write(ptr, sz);
+               // NOTE: Don't clear header, it needs to be written to m_write for downstream consumption
+               m_writer = std::shared_ptr<NcaBodyWriter>(new NczBodyWriter(m_ncaId, NCA_HEADER_SIZE, m_contentStorage));
           }
           else
           {
-               THROW_FORMAT("null writer");
+               m_writer = std::shared_ptr<NcaBodyWriter>(new NcaBodyWriter(m_ncaId, NCA_HEADER_SIZE, m_contentStorage));
           }
+
+          // assert !m_buffer.empty()
+
+          // Flush buffer now because
+          // future writes will go directly to m_writer
+          m_writer->write(m_buffer.data(), m_buffer.size());
+          m_buffer.clear(); // reclaim ok
      }
 
-     return sz;
+     // assert m_writer
+     // assert buffer.empty()
+
+     if (!sz) return; // no data
+
+     m_writer->write(ptr, sz);
 }
 
 void NcaWriter::flushHeader()

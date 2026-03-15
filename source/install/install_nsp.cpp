@@ -98,50 +98,61 @@ namespace tin::install::nsp
 
         LOG_DEBUG("Size: 0x%lx\n", ncaSize);
 
-        if (inst::config::validateNCAs && !m_declinedValidation)
-        {
-            tin::install::NcaHeader* header = new NcaHeader;
-            m_NSP->BufferData(header, m_NSP->GetDataOffset() + fileEntry->dataOffset, sizeof(tin::install::NcaHeader));
-
-            Crypto::AesXtr crypto(Crypto::Keys().headerKey, false);
-            crypto.decrypt(header, header, sizeof(tin::install::NcaHeader), 0, 0x200);
-
-            if (header->magic != MAGIC_NCA3)
-                THROW_FORMAT("Invalid NCA magic");
-
-            if (!Crypto::rsa2048PssVerify(&header->magic, 0x200, header->fixed_key_sig, Crypto::NCAHeaderSignature))
+        try {
+            if (inst::config::validateNCAs && !m_declinedValidation)
             {
-                std::string audioPath = "romfs:/audio/bark.wav";
-                if (!inst::config::soundEnabled) audioPath = "";
-                if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
-                std::thread audioThread(inst::util::playAudio,audioPath);
-                int rc = inst::ui::mainApp->CreateShowDialog("inst.nca_verify.title"_lang, "inst.nca_verify.desc"_lang, {"common.cancel"_lang, "inst.nca_verify.opt1"_lang}, false);
-                audioThread.join();
-                if (rc != 1)
-                    THROW_FORMAT(("inst.nca_verify.error"_lang + tin::util::GetNcaIdString(ncaId)).c_str());
-                m_declinedValidation = true;
+                tin::install::NcaHeader* header = new NcaHeader;
+                m_NSP->BufferData(header, m_NSP->GetDataOffset() + fileEntry->dataOffset, sizeof(tin::install::NcaHeader));
+
+                Crypto::AesXtr crypto(Crypto::Keys().headerKey, false);
+                crypto.decrypt(header, header, sizeof(tin::install::NcaHeader), 0, 0x200);
+
+                if (header->magic != MAGIC_NCA3)
+                    THROW_FORMAT("Invalid NCA magic");
+
+                if (!Crypto::rsa2048PssVerify(&header->magic, 0x200, header->fixed_key_sig, Crypto::NCAHeaderSignature))
+                {
+                    std::string audioPath = "romfs:/audio/bark.wav";
+                    if (!inst::config::soundEnabled) audioPath = "";
+                    if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
+                    std::thread audioThread(inst::util::playAudio,audioPath);
+                    int rc = inst::ui::mainApp->CreateShowDialog("inst.nca_verify.title"_lang, "inst.nca_verify.desc"_lang, {"common.cancel"_lang, "inst.nca_verify.opt1"_lang}, false);
+                    audioThread.join();
+                    if (rc != 1)
+                        THROW_FORMAT(("inst.nca_verify.error"_lang + tin::util::GetNcaIdString(ncaId)).c_str());
+                    m_declinedValidation = true;
+                }
+                delete header;
             }
-            delete header;
-        }
 
-        m_NSP->StreamToPlaceholder(contentStorage, ncaId);
+            m_NSP->StreamToPlaceholder(contentStorage, ncaId);
 
-        LOG_DEBUG("Registering placeholder...\n");
+            LOG_DEBUG("Registering placeholder...\n");
 
-        try
-        {
-            contentStorage->Register(*(NcmPlaceHolderId*)&ncaId, ncaId);
+            try
+            {
+                contentStorage->Register(*(NcmPlaceHolderId*)&ncaId, ncaId);
+            }
+            catch (...)
+            {
+                LOG_DEBUG(("Failed to register " + ncaFileName + ". It may already exist.\n").c_str());
+            }
+
+            try
+            {
+                contentStorage->DeletePlaceholder(*(NcmPlaceHolderId*)&ncaId);
+            }
+            catch (...) {}
         }
         catch (...)
         {
-            LOG_DEBUG(("Failed to register " + ncaFileName + ". It may already exist.\n").c_str());
+            try { contentStorage->DeletePlaceholder(*(NcmPlaceHolderId*)&ncaId); } catch (...) {}
+            try {
+                if (contentStorage->Has(ncaId))
+                    contentStorage->Delete(ncaId);
+            } catch (...) {}
+            throw;
         }
-
-        try
-        {
-            contentStorage->DeletePlaceholder(*(NcmPlaceHolderId*)&ncaId);
-        }
-        catch (...) {}
     }
 
     void NSPInstall::InstallTicketCert()

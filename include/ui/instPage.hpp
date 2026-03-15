@@ -49,6 +49,9 @@ namespace inst::ui {
             static void clearInstallIcon();
             static void loadMainMenu();
             static void loadInstallScreen();
+            static void requestInstallCancel();
+            static bool isInstallCancelRequested();
+            static void clearInstallCancel();
         private:
             Rectangle::Ref infoRect;
             Rectangle::Ref topRect;

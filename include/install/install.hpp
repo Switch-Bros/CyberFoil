@@ -47,10 +47,14 @@ namespace tin::install
             bool m_declinedValidation = false;
 
             std::vector<nx::ncm::ContentMeta> m_contentMeta;
+            std::vector<NcmContentId> m_sessionInstalledNcas;
 
             Install(NcmStorageId destStorageId, bool ignoreReqFirmVersion);
 
             virtual std::vector<std::tuple<nx::ncm::ContentMeta, NcmContentInfo>> ReadCNMT() = 0;
+            bool IsSessionInstalledNca(const NcmContentId& ncaId) const;
+            void TrackSessionInstalledNca(const NcmContentId& ncaId);
+            void CleanupSessionInstalledNcas();
 
             virtual void InstallContentMetaRecords(tin::data::ByteBuffer& installContentMetaBuf, int i);
             virtual void InstallApplicationRecord(int i);

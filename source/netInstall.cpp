@@ -187,14 +187,22 @@ namespace netInstStuff{
             LOG_DEBUG("Failed to install");
             LOG_DEBUG("%s", e.what());
             fprintf(stdout, "%s", e.what());
-            inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + urlNames[urlItr]);
-            inst::ui::instPage::setInstBarPerc(0);
-            std::string audioPath = "romfs:/audio/bark.wav";
-            if (!inst::config::soundEnabled) audioPath = "";
-            if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
-            std::thread audioThread(inst::util::playAudio,audioPath);
-            inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + urlNames[urlItr] + "!", "inst.info_page.failed_desc"_lang + "\n\n" + (std::string)e.what(), {"common.ok"_lang}, true);
-            audioThread.join();
+            const std::string errorText = e.what();
+            const bool canceled = errorText.find("Installation canceled.") != std::string::npos;
+            if (canceled) {
+                inst::ui::instPage::setInstInfoText("Installation canceled.");
+                inst::ui::instPage::setInstBarPerc(0);
+                inst::ui::mainApp->CreateShowDialog("Canceled", "Installation canceled by user.", {"common.ok"_lang}, true);
+            } else {
+                inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + urlNames[urlItr]);
+                inst::ui::instPage::setInstBarPerc(0);
+                std::string audioPath = "romfs:/audio/bark.wav";
+                if (!inst::config::soundEnabled) audioPath = "";
+                if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
+                std::thread audioThread(inst::util::playAudio,audioPath);
+                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + urlNames[urlItr] + "!", "inst.info_page.failed_desc"_lang + "\n\n" + errorText, {"common.ok"_lang}, true);
+                audioThread.join();
+            }
             nspInstalled = false;
         }
 

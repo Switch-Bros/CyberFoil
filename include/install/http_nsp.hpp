@@ -31,6 +31,7 @@ namespace tin::install::nsp
     {
         public:
             tin::network::HTTPDownload m_download;
+            std::string m_displayName;
 
             HTTPNSP(std::string url);
 
