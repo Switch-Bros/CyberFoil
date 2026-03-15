@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <chrono>
 #include <pu/Plutonium>
 #include "ui/bottomHint.hpp"
 
@@ -53,6 +54,7 @@ namespace inst::ui {
             static bool isInstallCancelRequested();
             static void clearInstallCancel();
         private:
+            bool touchWakeActive = false;
             Rectangle::Ref infoRect;
             Rectangle::Ref topRect;
             Rectangle::Ref botRect;

@@ -1,5 +1,8 @@
 #include <filesystem>
 #include <atomic>
+#include <chrono>
+#include <mutex>
+#include <thread>
 #include "ui/MainApplication.hpp"
 #include "ui/instPage.hpp"
 #include "util/util.hpp"
@@ -14,10 +17,109 @@ namespace inst::ui {
     extern MainApplication *mainApp;
     static pu::ui::Layout::Ref lastLayoutBeforeInstall;
     static std::atomic<bool> g_installCancelRequested{false};
+    static std::atomic<bool> g_installDimSessionActive{false};
+    static std::atomic<bool> g_installDimStopRequested{false};
+    static std::thread g_installDimThread;
+    static std::mutex g_installDimMutex;
+    static bool g_installDimLblReady = false;
+    static bool g_installDimSavedBrightnessValid = false;
+    static bool g_installDimIsDimmed = false;
+    static float g_installDimSavedBrightness = 0.0f;
+    static std::chrono::steady_clock::time_point g_installDimLastTouchAt;
 
     constexpr int kInstallIconSize = 256;
     constexpr int kInstallIconX = (1280 - kInstallIconSize) / 2;
     constexpr int kInstallIconY = 220;
+    constexpr auto kInstallDimDelay = std::chrono::seconds(60);
+    constexpr auto kInstallDimPollInterval = std::chrono::milliseconds(250);
+    constexpr float kInstallDimBrightness = 0.2f;
+
+    static void RestoreInstallBrightnessLocked()
+    {
+        if (!g_installDimLblReady || !g_installDimSavedBrightnessValid || !g_installDimIsDimmed)
+            return;
+
+        lblSetCurrentBrightnessSetting(g_installDimSavedBrightness);
+        lblApplyCurrentBrightnessSettingToBacklight();
+        g_installDimIsDimmed = false;
+    }
+
+    static void EnsureInstallDimmedLocked()
+    {
+        if (!g_installDimLblReady || !g_installDimSavedBrightnessValid || g_installDimIsDimmed)
+            return;
+
+        const float targetBrightness = std::min(g_installDimSavedBrightness, kInstallDimBrightness);
+        if (targetBrightness >= g_installDimSavedBrightness)
+            return;
+
+        if (R_SUCCEEDED(lblSetCurrentBrightnessSetting(targetBrightness)) &&
+            R_SUCCEEDED(lblApplyCurrentBrightnessSettingToBacklight())) {
+            g_installDimIsDimmed = true;
+        }
+    }
+
+    static void StartInstallDimSession()
+    {
+        std::lock_guard<std::mutex> lock(g_installDimMutex);
+        g_installDimLastTouchAt = std::chrono::steady_clock::now();
+
+        if (g_installDimSessionActive)
+            return;
+
+        g_installDimStopRequested = false;
+        g_installDimLblReady = R_SUCCEEDED(lblInitialize());
+        g_installDimSavedBrightnessValid = false;
+        g_installDimIsDimmed = false;
+        g_installDimSavedBrightness = 0.0f;
+
+        if (g_installDimLblReady) {
+            float currentBrightness = 0.0f;
+            if (R_SUCCEEDED(lblGetCurrentBrightnessSetting(&currentBrightness))) {
+                g_installDimSavedBrightness = currentBrightness;
+                g_installDimSavedBrightnessValid = true;
+            }
+        }
+
+        g_installDimSessionActive = true;
+        g_installDimThread = std::thread([]() {
+            while (!g_installDimStopRequested) {
+                {
+                    std::lock_guard<std::mutex> lock(g_installDimMutex);
+                    if (!g_installDimSessionActive)
+                        break;
+                    if (std::chrono::steady_clock::now() - g_installDimLastTouchAt >= kInstallDimDelay)
+                        EnsureInstallDimmedLocked();
+                }
+                std::this_thread::sleep_for(kInstallDimPollInterval);
+            }
+        });
+    }
+
+    static void StopInstallDimSession()
+    {
+        g_installDimStopRequested = true;
+        if (g_installDimThread.joinable())
+            g_installDimThread.join();
+
+        std::lock_guard<std::mutex> lock(g_installDimMutex);
+        RestoreInstallBrightnessLocked();
+        if (g_installDimLblReady)
+            lblExit();
+        g_installDimLblReady = false;
+        g_installDimSavedBrightnessValid = false;
+        g_installDimSessionActive = false;
+    }
+
+    static void NotifyInstallTouchActivity()
+    {
+        std::lock_guard<std::mutex> lock(g_installDimMutex);
+        if (!g_installDimSessionActive)
+            return;
+
+        g_installDimLastTouchAt = std::chrono::steady_clock::now();
+        RestoreInstallBrightnessLocked();
+    }
 
     instPage::instPage() : Layout::Layout() {
         if (inst::config::oledMode) {
@@ -211,6 +313,7 @@ namespace inst::ui {
     }
 
     void instPage::loadMainMenu(){
+        StopInstallDimSession();
         if (lastLayoutBeforeInstall != nullptr && lastLayoutBeforeInstall != mainApp->instpage)
             mainApp->LoadLayout(lastLayoutBeforeInstall);
         else
@@ -233,7 +336,9 @@ namespace inst::ui {
         mainApp->instpage->progressDetailText->SetVisible(false);
         mainApp->instpage->installIconImage->SetVisible(false);
         mainApp->instpage->awooImage->SetVisible(!inst::config::gayMode);
+        mainApp->instpage->touchWakeActive = false;
         g_installCancelRequested.store(false);
+        StartInstallDimSession();
         mainApp->LoadLayout(mainApp->instpage);
         mainApp->CallForRender();
     }
@@ -251,6 +356,15 @@ namespace inst::ui {
     }
 
     void instPage::onInput(u64 Down, u64 Up, u64 Held, pu::ui::Touch Pos) {
+        if (!Pos.IsEmpty()) {
+            if (!this->touchWakeActive) {
+                this->touchWakeActive = true;
+                NotifyInstallTouchActivity();
+            }
+        } else {
+            this->touchWakeActive = false;
+        }
+
         int bottomTapX = 0;
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
