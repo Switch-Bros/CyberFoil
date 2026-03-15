@@ -75,6 +75,12 @@
             "top_info1": "Waiting for a connection... Your Switch's IP Address is: ",
             "failed": "Failed to perform remote install!",
             "transfer_interput": "An error occured during data transfer. Check your network connection.",
+            "retry": {
+                "title": "Download failed",
+                "desc": "All retry attempts failed. Do you want to try again?",
+                "yes": "Retry",
+                "no": "Cancel"
+            },
             "source_string": " over local network",
             "buttons": " Install Over Internet     Help     Cancel",
             "buttons1": " Select File     Select All     Install File(s)     Cancel"

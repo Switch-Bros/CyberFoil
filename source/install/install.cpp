@@ -25,7 +25,9 @@ SOFTWARE.
 #include <switch.h>
 #include <cstring>
 #include <memory>
+#include <algorithm>
 #include "util/error.hpp"
+#include "ui/instPage.hpp"
 
 #include "nx/ncm.hpp"
 #include "util/title_util.hpp"
@@ -44,6 +46,39 @@ namespace tin::install
     Install::~Install()
     {
         appletSetMediaPlaybackState(false);
+    }
+
+    bool Install::IsSessionInstalledNca(const NcmContentId& ncaId) const
+    {
+        return std::any_of(m_sessionInstalledNcas.begin(), m_sessionInstalledNcas.end(),
+            [&ncaId](const NcmContentId& existing) {
+                return std::memcmp(&existing, &ncaId, sizeof(NcmContentId)) == 0;
+            });
+    }
+
+    void Install::TrackSessionInstalledNca(const NcmContentId& ncaId)
+    {
+        if (!IsSessionInstalledNca(ncaId))
+            m_sessionInstalledNcas.push_back(ncaId);
+    }
+
+    void Install::CleanupSessionInstalledNcas()
+    {
+        if (m_sessionInstalledNcas.empty())
+            return;
+
+        nx::ncm::ContentStorage contentStorage(m_destStorageId);
+        for (const NcmContentId& ncaId : m_sessionInstalledNcas) {
+            try {
+                contentStorage.DeletePlaceholder(*(const NcmPlaceHolderId*)&ncaId);
+            } catch (...) {}
+
+            try {
+                if (contentStorage.Has(ncaId))
+                    contentStorage.Delete(ncaId);
+            } catch (...) {}
+        }
+        m_sessionInstalledNcas.clear();
     }
 
     // TODO: Implement RAII on NcmContentMetaDatabase
@@ -85,35 +120,44 @@ namespace tin::install
     {
         tin::data::ByteBuffer cnmtBuf;
 
-        std::vector<std::tuple<nx::ncm::ContentMeta, NcmContentInfo>> tupelList = this->ReadCNMT();
-        
-        for (size_t i = 0; i < tupelList.size(); i++) {
-            std::tuple<nx::ncm::ContentMeta, NcmContentInfo> cnmtTuple = tupelList[i];
+        try {
+            std::vector<std::tuple<nx::ncm::ContentMeta, NcmContentInfo>> tupelList = this->ReadCNMT();
             
-            m_contentMeta.push_back(std::get<0>(cnmtTuple));
-            NcmContentInfo cnmtContentRecord = std::get<1>(cnmtTuple);
+            for (size_t i = 0; i < tupelList.size(); i++) {
+                if (inst::ui::instPage::isInstallCancelRequested())
+                    THROW_FORMAT("Installation canceled.");
+                std::tuple<nx::ncm::ContentMeta, NcmContentInfo> cnmtTuple = tupelList[i];
+                
+                m_contentMeta.push_back(std::get<0>(cnmtTuple));
+                NcmContentInfo cnmtContentRecord = std::get<1>(cnmtTuple);
 
-            nx::ncm::ContentStorage contentStorage(m_destStorageId);
+                nx::ncm::ContentStorage contentStorage(m_destStorageId);
 
-            if (!contentStorage.Has(cnmtContentRecord.content_id))
-            {
-                LOG_DEBUG("Installing CNMT NCA...\n");
-                this->InstallNCA(cnmtContentRecord.content_id);
+                if (!contentStorage.Has(cnmtContentRecord.content_id))
+                {
+                    LOG_DEBUG("Installing CNMT NCA...\n");
+                    this->InstallNCA(cnmtContentRecord.content_id);
+                    TrackSessionInstalledNca(cnmtContentRecord.content_id);
+                }
+                else
+                {
+                    LOG_DEBUG("CNMT NCA already installed. Proceeding...\n");
+                }
+
+                // Parse data and create install content meta
+                if (m_ignoreReqFirmVersion)
+                    LOG_DEBUG("WARNING: Required system firmware version is being IGNORED!\n");
+
+                tin::data::ByteBuffer installContentMetaBuf;
+                m_contentMeta[i].GetInstallContentMeta(installContentMetaBuf, cnmtContentRecord, m_ignoreReqFirmVersion);
+
+                this->InstallContentMetaRecords(installContentMetaBuf, i);
+                this->InstallApplicationRecord(i);
             }
-            else
-            {
-                LOG_DEBUG("CNMT NCA already installed. Proceeding...\n");
-            }
-
-            // Parse data and create install content meta
-            if (m_ignoreReqFirmVersion)
-                LOG_DEBUG("WARNING: Required system firmware version is being IGNORED!\n");
-
-            tin::data::ByteBuffer installContentMetaBuf;
-            m_contentMeta[i].GetInstallContentMeta(installContentMetaBuf, cnmtContentRecord, m_ignoreReqFirmVersion);
-
-            this->InstallContentMetaRecords(installContentMetaBuf, i);
-            this->InstallApplicationRecord(i);
+        }
+        catch (...) {
+            CleanupSessionInstalledNcas();
+            throw;
         }
     }
 
@@ -129,13 +173,28 @@ namespace tin::install
             LOG_DEBUG("WARNING: Ticket installation failed! This may not be an issue, depending on your use case.\nProceed with caution!\n");
         }
 
-        for (nx::ncm::ContentMeta contentMeta: m_contentMeta) {
-            LOG_DEBUG("Installing NCAs...\n");
-            for (auto& record : contentMeta.GetContentInfos())
-            {
-                LOG_DEBUG("Installing from %s\n", tin::util::GetNcaIdString(record.content_id).c_str());
-                this->InstallNCA(record.content_id);
+        try {
+            for (nx::ncm::ContentMeta contentMeta: m_contentMeta) {
+                LOG_DEBUG("Installing NCAs...\n");
+                for (auto& record : contentMeta.GetContentInfos())
+                {
+                    if (inst::ui::instPage::isInstallCancelRequested())
+                        THROW_FORMAT("Installation canceled.");
+                    nx::ncm::ContentStorage contentStorage(m_destStorageId);
+                    if (contentStorage.Has(record.content_id)) {
+                        LOG_DEBUG("NCA already installed. Skipping %s\n", tin::util::GetNcaIdString(record.content_id).c_str());
+                        continue;
+                    }
+
+                    LOG_DEBUG("Installing from %s\n", tin::util::GetNcaIdString(record.content_id).c_str());
+                    this->InstallNCA(record.content_id);
+                    TrackSessionInstalledNca(record.content_id);
+                }
             }
+        }
+        catch (...) {
+            CleanupSessionInstalledNcas();
+            throw;
         }
     }
 

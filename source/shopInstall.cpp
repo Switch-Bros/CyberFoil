@@ -193,6 +193,12 @@ namespace {
     {
         if (urlPath.rfind("http://", 0) == 0 || urlPath.rfind("https://", 0) == 0)
             return urlPath;
+        if (urlPath.size() >= 5) {
+            std::string prefix = urlPath.substr(0, 5);
+            std::transform(prefix.begin(), prefix.end(), prefix.begin(), [](unsigned char c) { return std::tolower(c); });
+            if (prefix == "jbod:")
+                return urlPath;
+        }
         if (!urlPath.empty() && urlPath[0] == '/')
             return baseUrl + urlPath;
         return baseUrl + "/" + urlPath;
@@ -233,8 +239,6 @@ namespace {
 
     void UpdateInstallIcon(const shopInstStuff::ShopItem& item)
     {
-        const bool offlinePackAvailable = inst::offline::HasPackedIcons();
-
         if (item.hasTitleId) {
             const std::uint64_t lookupTitleId = GetOfflineLookupTitleId(item);
             if (lookupTitleId != 0) {
@@ -244,12 +248,6 @@ namespace {
                     return;
                 }
             }
-        }
-
-        // When offline icon pack is present, never hit network icon URLs.
-        if (offlinePackAvailable) {
-            inst::ui::instPage::clearInstallIcon();
-            return;
         }
 
         if (!item.hasIconUrl) {
@@ -962,7 +960,8 @@ namespace shopInstStuff {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "cyberfoil");
+        const std::string& userAgent = inst::curl::getUserAgent();
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
@@ -1306,7 +1305,7 @@ namespace shopInstStuff {
                     return 0;
                 }
 
-                const size_t fetch_size = std::max(req_size, kReadAheadSize);
+                const size_t fetch_size = std::min(req_size, kReadAheadSize);
                 m_cache.resize(fetch_size);
                 m_download.BufferDataRange(m_cache.data(), req_off, fetch_size, nullptr);
                 m_cache_start = req_off;
@@ -1468,9 +1467,28 @@ namespace shopInstStuff {
 
             std::unordered_map<std::string, EntryState> entries;
             entries.reserve(collections.size());
+            auto cleanupEntries = [&entries]() {
+                for (auto& [_, entry] : entries) {
+                    if (!entry.is_nca || !entry.storage)
+                        continue;
+                    try {
+                        if (entry.nca_writer)
+                            entry.nca_writer->close();
+                    } catch (...) {}
+                    try { entry.storage->DeletePlaceholder(*(NcmPlaceHolderId*)&entry.nca_id); } catch (...) {}
+                    try {
+                        if (entry.storage->Has(entry.nca_id))
+                            entry.storage->Delete(entry.nca_id);
+                    } catch (...) {}
+                }
+            };
 
             std::vector<std::uint8_t> buf(0x800000);
             for (const auto& collection : collections) {
+                if (inst::ui::instPage::isInstallCancelRequested()) {
+                    cleanupEntries();
+                    THROW_FORMAT("Installation canceled.");
+                }
                 EntryState entry;
                 entry.name = collection.name;
                 entry.size = collection.size;
@@ -1485,12 +1503,20 @@ namespace shopInstStuff {
                 u64 remaining = collection.size;
                 u64 offset = collection.offset;
                 while (remaining > 0) {
+                    if (inst::ui::instPage::isInstallCancelRequested()) {
+                        cleanupEntries();
+                        THROW_FORMAT("Installation canceled.");
+                    }
                     const auto chunk = static_cast<size_t>(std::min<u64>(remaining, buf.size()));
                     u64 bytes_read = 0;
                     if (R_FAILED(source.Read(buf.data(), static_cast<s64>(offset), static_cast<s64>(chunk), &bytes_read))) {
+                        cleanupEntries();
                         return false;
                     }
-                    if (bytes_read == 0) return false;
+                    if (bytes_read == 0) {
+                        cleanupEntries();
+                        return false;
+                    }
 
                     if (entry.name.find(".tik") != std::string::npos) {
                         entry.ticket_buf.insert(entry.ticket_buf.end(), buf.data(), buf.data() + bytes_read);
@@ -1568,6 +1594,10 @@ namespace shopInstStuff {
             }
 
             for (auto& [name, entry] : entries) {
+                if (inst::ui::instPage::isInstallCancelRequested()) {
+                    cleanupEntries();
+                    THROW_FORMAT("Installation canceled.");
+                }
                 if (entry.name.find(".tik") != std::string::npos) {
                     const auto base = entry.name.substr(0, entry.name.size() - 4);
                     auto it = entries.find(base + ".cert");
@@ -1667,14 +1697,22 @@ namespace shopInstStuff {
             LOG_DEBUG("%s", e.what());
             fprintf(stdout, "%s", e.what());
             std::string failedName = currentName.empty() ? names.front() : currentName;
-            inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + failedName);
-            inst::ui::instPage::setInstBarPerc(0);
-            std::string audioPath = "romfs:/audio/bark.wav";
-            if (!inst::config::soundEnabled) audioPath = "";
-            if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
-            std::thread audioThread(inst::util::playAudio, audioPath);
-            inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", "inst.info_page.failed_desc"_lang + "\n\n" + (std::string)e.what(), {"common.ok"_lang}, true);
-            audioThread.join();
+            const std::string errorText = e.what();
+            const bool canceled = errorText.find("Installation canceled.") != std::string::npos;
+            if (canceled) {
+                inst::ui::instPage::setInstInfoText("Installation canceled.");
+                inst::ui::instPage::setInstBarPerc(0);
+                inst::ui::mainApp->CreateShowDialog("Canceled", "Installation canceled by user.", {"common.ok"_lang}, true);
+            } else {
+                inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + failedName);
+                inst::ui::instPage::setInstBarPerc(0);
+                std::string audioPath = "romfs:/audio/bark.wav";
+                if (!inst::config::soundEnabled) audioPath = "";
+                if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
+                std::thread audioThread(inst::util::playAudio, audioPath);
+                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", "inst.info_page.failed_desc"_lang + "\n\n" + errorText, {"common.ok"_lang}, true);
+                audioThread.join();
+            }
             nspInstalled = false;
         }
 

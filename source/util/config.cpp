@@ -15,6 +15,8 @@ namespace inst::config {
     std::string shopUrl;
     std::string shopUser;
     std::string shopPass;
+    std::string httpUserAgentMode;
+    std::string httpUserAgent;
     std::vector<std::string> updateInfo;
     int languageSetting;
     bool autoUpdate;
@@ -350,6 +352,20 @@ namespace inst::config {
         return DefaultPortForNormalizedProtocol(NormalizeProtocol(protocol));
     }
 
+    std::string NormalizeHttpUserAgentMode(const std::string& mode)
+    {
+        const std::string normalized = ToLower(Trim(mode));
+        if (normalized == "chrome")
+            return "chrome";
+        if (normalized == "safari")
+            return "safari";
+        if (normalized == "firefox")
+            return "firefox";
+        if (normalized == "custom")
+            return "custom";
+        return "default";
+    }
+
     std::string BuildShopUrl(const ShopProfile& shop)
     {
         std::string host = Trim(shop.host);
@@ -483,6 +499,8 @@ namespace inst::config {
             {"shopUrl", shopUrl},
             {"shopUser", shopUser},
             {"shopPass", shopPass},
+            {"httpUserAgentMode", httpUserAgentMode},
+            {"httpUserAgent", httpUserAgent},
             {"shopHideInstalled", shopHideInstalled},
             {"shopHideInstalledSection", shopHideInstalledSection},
             {"shopAllBaseOnly", shopAllBaseOnly},
@@ -513,11 +531,14 @@ namespace inst::config {
         shopUrl.clear();
         shopUser.clear();
         shopPass.clear();
+        httpUserAgentMode = "default";
+        httpUserAgent.clear();
         shopHideInstalled = false;
         shopHideInstalledSection = false;
         shopAllBaseOnly = false;
         shopStartGridMode = false;
         offlineDbAutoCheckOnStartup = true;
+        bool hasHttpUserAgentModeKey = false;
 
         try {
             std::ifstream file(inst::config::configPath);
@@ -540,6 +561,11 @@ namespace inst::config {
             if (j.contains("shopUrl")) shopUrl = j["shopUrl"].get<std::string>();
             if (j.contains("shopUser")) shopUser = j["shopUser"].get<std::string>();
             if (j.contains("shopPass")) shopPass = j["shopPass"].get<std::string>();
+            if (j.contains("httpUserAgentMode")) {
+                httpUserAgentMode = j["httpUserAgentMode"].get<std::string>();
+                hasHttpUserAgentModeKey = true;
+            }
+            if (j.contains("httpUserAgent")) httpUserAgent = j["httpUserAgent"].get<std::string>();
             if (j.contains("shopHideInstalled")) shopHideInstalled = j["shopHideInstalled"].get<bool>();
             if (j.contains("shopHideInstalledSection")) shopHideInstalledSection = j["shopHideInstalledSection"].get<bool>();
             if (j.contains("shopAllBaseOnly")) shopAllBaseOnly = j["shopAllBaseOnly"].get<bool>();
@@ -550,6 +576,10 @@ namespace inst::config {
             // If loading values from the config fails, we just load the defaults and overwrite the old config
             setConfig();
         }
+
+        httpUserAgentMode = NormalizeHttpUserAgentMode(httpUserAgentMode);
+        if (!hasHttpUserAgentModeKey && !Trim(httpUserAgent).empty())
+            httpUserAgentMode = "custom";
 
         EnsureShopsDirectory();
         TryMigrateLegacyShopToJson();

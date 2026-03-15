@@ -18,6 +18,13 @@ Save Sync:
 Offline metadata/icons (no online lookups):
 - CyberFoil can use local title metadata and local icons from `sdmc:/switch/CyberFoil/offline_db/`.
 
+Configuration:
+- `sdmc:/switch/CyberFoil/config.json` supports optional `httpUserAgentMode` and `httpUserAgent`.
+- `httpUserAgentMode` can be `default`, `chrome`, `safari`, `firefox`, or `custom`.
+- `default` keeps `CyberFoil/<version>`.
+- Preset/custom modes are applied only to file/media download requests. Shop API requests keep `CyberFoil/<version>`.
+- `httpUserAgent` is used when `httpUserAgentMode` is `custom`.
+
 # Note
 - Uses [XorTroll's Plutonium](https://github.com/XorTroll/Plutonium) for a pretty graphical interface
 

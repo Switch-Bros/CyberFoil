@@ -69,6 +69,142 @@ namespace inst::ui {
             }
             return labels;
         }
+
+        std::string GetUserAgentProfileLabel(const std::string& mode)
+        {
+            const std::string normalized = inst::config::NormalizeHttpUserAgentMode(mode);
+            if (normalized == "chrome")
+                return "Chrome (Windows)";
+            if (normalized == "safari")
+                return "Safari (iPhone)";
+            if (normalized == "firefox")
+                return "Firefox (Windows)";
+            if (normalized == "custom")
+                return "Custom";
+            return "Default (CyberFoil)";
+        }
+
+        int GetUserAgentProfileChoiceIndex(const std::string& mode)
+        {
+            const std::string normalized = inst::config::NormalizeHttpUserAgentMode(mode);
+            if (normalized == "chrome")
+                return 1;
+            if (normalized == "safari")
+                return 2;
+            if (normalized == "firefox")
+                return 3;
+            if (normalized == "custom")
+                return 4;
+            return 0;
+        }
+
+        std::string GetUserAgentProfileModeFromChoice(int choice)
+        {
+            if (choice == 1)
+                return "chrome";
+            if (choice == 2)
+                return "safari";
+            if (choice == 3)
+                return "firefox";
+            if (choice == 4)
+                return "custom";
+            return "default";
+        }
+
+        std::vector<std::string> WrapDialogText(const std::string& text, std::size_t maxLineChars)
+        {
+            std::vector<std::string> lines;
+            if (text.empty()) {
+                lines.push_back("No changelog available for this release.");
+                return lines;
+            }
+
+            std::stringstream paragraphs(text);
+            std::string paragraph;
+            while (std::getline(paragraphs, paragraph)) {
+                if (paragraph.empty()) {
+                    lines.push_back("");
+                    continue;
+                }
+
+                std::stringstream words(paragraph);
+                std::string word;
+                std::string line;
+                while (words >> word) {
+                    const std::string candidate = line.empty() ? word : (line + " " + word);
+                    if (candidate.size() <= maxLineChars) {
+                        line = candidate;
+                        continue;
+                    }
+
+                    if (!line.empty()) {
+                        lines.push_back(line);
+                        line.clear();
+                    }
+
+                    if (word.size() <= maxLineChars) {
+                        line = word;
+                        continue;
+                    }
+
+                    std::size_t start = 0;
+                    while (start < word.size()) {
+                        lines.push_back(word.substr(start, maxLineChars));
+                        start += maxLineChars;
+                    }
+                }
+
+                if (!line.empty())
+                    lines.push_back(line);
+            }
+
+            if (lines.empty())
+                lines.push_back("No changelog available for this release.");
+            return lines;
+        }
+
+        void ShowPagedTextDialog(const std::string& title, const std::string& text)
+        {
+            auto lines = WrapDialogText(text, 68);
+            static constexpr int kLinesPerPage = 18;
+            const int totalPages = std::max(1, static_cast<int>((lines.size() + kLinesPerPage - 1) / kLinesPerPage));
+            int page = 0;
+
+            while (true) {
+                const int start = page * kLinesPerPage;
+                const int end = std::min<int>(static_cast<int>(lines.size()), start + kLinesPerPage);
+                std::string body;
+                for (int i = start; i < end; i++) {
+                    if (!body.empty())
+                        body.push_back('\n');
+                    body += lines[static_cast<std::size_t>(i)];
+                }
+                body += "\n\nPage " + std::to_string(page + 1) + "/" + std::to_string(totalPages);
+
+                std::vector<std::string> options;
+                std::vector<int> actions;
+                if (page > 0) {
+                    options.push_back("Previous");
+                    actions.push_back(-1);
+                }
+                if (page + 1 < totalPages) {
+                    options.push_back("Next");
+                    actions.push_back(1);
+                }
+                options.push_back("Close");
+                actions.push_back(0);
+
+                const int choice = mainApp->CreateShowDialog(title, body, options, false);
+                if (choice < 0 || choice >= static_cast<int>(actions.size()) || actions[choice] == 0)
+                    break;
+
+                page += actions[choice];
+                if (page < 0)
+                    page = 0;
+                if (page >= totalPages)
+                    page = totalPages - 1;
+            }
+        }
     }
 
     optionsPage::optionsPage() : Layout::Layout() {
@@ -172,16 +308,34 @@ namespace inst::ui {
     }
 
     void optionsPage::askToUpdate(std::vector<std::string> updateInfo) {
-            if (!mainApp->CreateShowDialog("options.update.title"_lang, "options.update.desc0"_lang + updateInfo[0] + "options.update.desc1"_lang, {"options.update.opt0"_lang, "common.cancel"_lang}, false)) {
+            const std::string version = updateInfo.empty() ? std::string() : updateInfo[0];
+            const std::string downloadUrl = updateInfo.size() > 1 ? updateInfo[1] : std::string();
+            const std::string releaseNotes = updateInfo.size() > 2 ? updateInfo[2] : "No changelog available for this release.";
+
+            while (true) {
+                int choice = mainApp->CreateShowDialog(
+                    "options.update.title"_lang,
+                    "options.update.desc0"_lang + version + "options.update.desc1"_lang,
+                    {"options.update.opt0"_lang, "View Changelog", "common.cancel"_lang},
+                    false);
+
+                if (choice == 1) {
+                    ShowPagedTextDialog("Changelog " + version, releaseNotes);
+                    continue;
+                }
+
+                if (choice != 0)
+                    break;
+
                 inst::ui::instPage::loadInstallScreen();
-                inst::ui::instPage::setTopInstInfoText("options.update.top_info"_lang + updateInfo[0]);
+                inst::ui::instPage::setTopInstInfoText("options.update.top_info"_lang + version);
                 inst::ui::instPage::setInstBarPerc(0);
-                inst::ui::instPage::setInstInfoText("options.update.bot_info"_lang + updateInfo[0]);
+                inst::ui::instPage::setInstInfoText("options.update.bot_info"_lang + version);
                 try {
                     std::string downloadName = inst::config::appDir + "/temp_download.zip";
-                    inst::curl::downloadFile(updateInfo[1], downloadName.c_str(), 0, true);
+                    inst::curl::downloadFile(downloadUrl, downloadName.c_str(), 0, true);
                     romfsExit();
-                    inst::ui::instPage::setInstInfoText("options.update.bot_info2"_lang + updateInfo[0]);
+                    inst::ui::instPage::setInstInfoText("options.update.bot_info2"_lang + version);
                     inst::zip::extractFile(downloadName, "sdmc:/");
                     std::filesystem::remove(downloadName);
                     mainApp->CreateShowDialog("options.update.complete"_lang, "options.update.end_desc"_lang, {"common.ok"_lang}, false);
@@ -190,6 +344,7 @@ namespace inst::ui {
                 }
                 mainApp->FadeOut();
                 mainApp->Close();
+                break;
             }
         return;
     }
@@ -283,6 +438,7 @@ namespace inst::ui {
             addItem("Active shop: " + inst::util::shortenString(ActiveShopLabel(shops), 42, false), false, false);
             addItem("Memorized shops: " + std::to_string(shops.size()), false, false);
             addItem("Add new shop", false, false);
+            addItem("User-Agent profile: " + GetUserAgentProfileLabel(inst::config::httpUserAgentMode), false, false);
             addItem("options.menu_items.shop_hide_installed"_lang, true, inst::config::shopHideInstalled);
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
             addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
@@ -490,7 +646,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 12, 13, 24, 19, 14, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 14, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
@@ -867,6 +1023,52 @@ namespace inst::ui {
 
                     inst::config::SetActiveShop(newShop, true);
                     this->refreshOptions();
+                    break;
+                }
+                case 25: {
+                    const std::vector<std::string> profiles = {
+                        "Default (CyberFoil)",
+                        "Chrome (Windows)",
+                        "Safari (iPhone)",
+                        "Firefox (Windows)",
+                        "Custom"
+                    };
+                    int currentIndex = GetUserAgentProfileChoiceIndex(inst::config::httpUserAgentMode);
+                    if (currentIndex < 0 || currentIndex >= static_cast<int>(profiles.size()))
+                        currentIndex = 0;
+                    const std::string currentLabel = profiles[currentIndex];
+                    int profileChoice = inst::ui::mainApp->CreateShowDialog(
+                        "User-Agent profile",
+                        "Used for file/media downloads. Shop API always uses CyberFoil.",
+                        profiles,
+                        false
+                    );
+                    if (profileChoice < 0 || profileChoice >= static_cast<int>(profiles.size()))
+                        break;
+
+                    std::string mode = GetUserAgentProfileModeFromChoice(profileChoice);
+                    if (mode == "custom") {
+                        std::string customUserAgent = TrimString(inst::util::softwareKeyboard("Enter custom User-Agent", inst::config::httpUserAgent, 300));
+                        if (customUserAgent.empty()) {
+                            inst::ui::mainApp->CreateShowDialog("Invalid User-Agent", "Custom User-Agent cannot be empty.", {"common.ok"_lang}, true);
+                            break;
+                        }
+                        inst::config::httpUserAgent = customUserAgent;
+                    }
+
+                    inst::config::httpUserAgentMode = mode;
+                    inst::config::setConfig();
+                    this->refreshOptions();
+
+                    const std::string newLabel = GetUserAgentProfileLabel(inst::config::httpUserAgentMode);
+                    if (newLabel != currentLabel) {
+                        inst::ui::mainApp->CreateShowDialog(
+                            "User-Agent profile",
+                            "Current profile: " + newLabel,
+                            {"common.ok"_lang},
+                            true
+                        );
+                    }
                     break;
                 }
                 case 12:

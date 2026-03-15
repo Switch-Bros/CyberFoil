@@ -16,6 +16,8 @@ namespace inst::config {
     extern std::string shopUrl;
     extern std::string shopUser;
     extern std::string shopPass;
+    extern std::string httpUserAgentMode;
+    extern std::string httpUserAgent;
     extern std::vector<std::string> updateInfo;
     extern int languageSetting;
     extern bool ignoreReqVers;
@@ -47,6 +49,7 @@ namespace inst::config {
     };
 
     int DefaultPortForProtocol(const std::string& protocol);
+    std::string NormalizeHttpUserAgentMode(const std::string& mode);
     std::string BuildShopUrl(const ShopProfile& shop);
     std::vector<ShopProfile> LoadShops();
     bool SaveShop(const ShopProfile& shop, std::string* error = nullptr);

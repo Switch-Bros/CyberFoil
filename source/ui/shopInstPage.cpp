@@ -12,6 +12,7 @@
 #include <switch.h>
 #include "ui/MainApplication.hpp"
 #include "ui/shopInstPage.hpp"
+#include "ui/overflowText.hpp"
 #include "util/config.hpp"
 #include "util/curl.hpp"
 #include "util/lang.hpp"
@@ -36,13 +37,14 @@ namespace {
     constexpr int kGridStartY = 120;
     constexpr int kGridItemsPerPage = kGridCols * kGridRows;
     constexpr int kListMarqueeStartDelayMs = 2000;
+    constexpr int kListMarqueeEndPauseMs = 260;
     constexpr int kListMarqueeFadeDurationMs = 260;
     constexpr int kListMarqueeSpeedPxPerSec = 72;
-    constexpr int kListMarqueeWindowCharStepPx = 10;
     constexpr int kListMarqueePhasePause = 0;
     constexpr int kListMarqueePhaseScroll = 1;
-    constexpr int kListMarqueePhaseFadeOut = 2;
-    constexpr int kListMarqueePhaseFadeIn = 3;
+    constexpr int kListMarqueePhaseEndPause = 2;
+    constexpr int kListMarqueePhaseFadeOut = 3;
+    constexpr int kListMarqueePhaseFadeIn = 4;
 
     class MarqueeClipElement : public pu::ui::elm::Element
     {
@@ -95,19 +97,6 @@ namespace {
 
     bool TryParseHexU64(const std::string& hex, std::uint64_t& out);
 
-    int ComputeListNameLimit(const std::string& suffix)
-    {
-        int nameLimit = 56;
-        if (!suffix.empty()) {
-            int maxSuffix = static_cast<int>(suffix.size()) + 1;
-            if (nameLimit > maxSuffix)
-                nameLimit -= maxSuffix;
-        }
-        if (nameLimit < 8)
-            nameLimit = 8;
-        return nameLimit;
-    }
-
     pu::ui::Color BlendOverOpaque(const pu::ui::Color& base, const pu::ui::Color& overlay)
     {
         const int a = static_cast<int>(overlay.A);
@@ -124,34 +113,6 @@ namespace {
     {
         const int luma = (static_cast<int>(bg.R) * 299) + (static_cast<int>(bg.G) * 587) + (static_cast<int>(bg.B) * 114);
         return luma >= (1000 * 150);
-    }
-
-    std::string NormalizeSingleLineTitle(const std::string& title)
-    {
-        if (title.empty())
-            return std::string();
-
-        std::string out;
-        out.reserve(title.size());
-        bool previousWasSpace = false;
-        for (char c : title) {
-            const bool isWhitespace = (c == ' ' || c == '\t' || c == '\r' || c == '\n');
-            if (isWhitespace) {
-                if (!out.empty() && !previousWasSpace)
-                    out.push_back(' ');
-                previousWasSpace = true;
-                continue;
-            }
-            out.push_back(c);
-            previousWasSpace = false;
-        }
-        std::size_t start = 0;
-        while (start < out.size() && out[start] == ' ')
-            start++;
-        std::size_t end = out.size();
-        while (end > start && out[end - 1] == ' ')
-            end--;
-        return out.substr(start, end - start);
     }
 
     std::string NormalizeHex(std::string hex)
@@ -380,6 +341,107 @@ namespace {
         return out;
     }
 
+    std::vector<std::size_t> BuildUtf8Boundaries(const std::string& text)
+    {
+        std::vector<std::size_t> boundaries;
+        boundaries.reserve(text.size() + 1);
+        boundaries.push_back(0);
+        for (std::size_t i = 0; i < text.size();) {
+            const std::size_t start = i;
+            (void)DecodeUtf8CodePoint(text, i);
+            if (i <= start)
+                i = start + 1;
+            boundaries.push_back(i);
+        }
+        return boundaries;
+    }
+
+    bool FitsSingleLineMenuRender(const std::string& text, int fontSize, int maxWidth, int maxHeight)
+    {
+        if (maxWidth <= 0 || maxHeight <= 0)
+            return false;
+        const auto font = pu::ui::render::LoadDefaultFont(fontSize);
+        const auto meme = pu::ui::render::LoadSharedFont(pu::ui::render::SharedFont::NintendoExtended, fontSize);
+        auto texture = pu::ui::render::RenderText(font, meme, text, COLOR("#FFFFFFFF"));
+        if (texture == nullptr)
+            return false;
+        const int width = pu::ui::render::GetTextureWidth(texture);
+        const int height = pu::ui::render::GetTextureHeight(texture);
+        pu::ui::render::DeleteTexture(texture);
+        return (width <= maxWidth) && (height <= maxHeight);
+    }
+
+    std::string ClipSingleLineByMenuRender(const std::string& text, int fontSize, int maxWidth, int maxHeight, bool* overflow = nullptr)
+    {
+        if (overflow != nullptr)
+            *overflow = false;
+        if (FitsSingleLineMenuRender(text, fontSize, maxWidth, maxHeight))
+            return text;
+
+        if (overflow != nullptr)
+            *overflow = true;
+        const auto boundaries = BuildUtf8Boundaries(text);
+        int low = 0;
+        int high = static_cast<int>(boundaries.size()) - 1;
+        int best = -1;
+        while (low <= high) {
+            const int mid = low + ((high - low) / 2);
+            const std::string candidate = text.substr(0, boundaries[static_cast<std::size_t>(mid)]);
+            if (FitsSingleLineMenuRender(candidate, fontSize, maxWidth, maxHeight)) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        if (best <= 0)
+            return std::string();
+        return text.substr(0, boundaries[static_cast<std::size_t>(best)]);
+    }
+
+    std::string ClipSingleLinePrefixSuffixByMenuRender(const std::string& prefix, const std::string& suffix, int fontSize, int maxWidth, int maxHeight, bool* overflow = nullptr)
+    {
+        if (overflow != nullptr)
+            *overflow = false;
+
+        const std::string full = prefix + suffix;
+        if (FitsSingleLineMenuRender(full, fontSize, maxWidth, maxHeight))
+            return full;
+
+        if (overflow != nullptr)
+            *overflow = true;
+        const std::string marker = prefix.empty() ? std::string() : std::string("...");
+        const auto boundaries = BuildUtf8Boundaries(prefix);
+        int low = 0;
+        int high = static_cast<int>(boundaries.size()) - 1;
+        int best = -1;
+        while (low <= high) {
+            const int mid = low + ((high - low) / 2);
+            std::string candidate = prefix.substr(0, boundaries[static_cast<std::size_t>(mid)]);
+            if (!candidate.empty() && !marker.empty())
+                candidate += marker;
+            candidate += suffix;
+            if (FitsSingleLineMenuRender(candidate, fontSize, maxWidth, maxHeight)) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        if (best < 0) {
+            bool suffixOverflow = false;
+            return ClipSingleLineByMenuRender(suffix, fontSize, maxWidth, maxHeight, &suffixOverflow);
+        }
+
+        std::string clipped = prefix.substr(0, boundaries[static_cast<std::size_t>(best)]);
+        if (!clipped.empty() && !marker.empty())
+            clipped += marker;
+        clipped += suffix;
+        return clipped;
+    }
+
     bool TryParseHexU64(const std::string& hex, std::uint64_t& out)
     {
         if (hex.empty())
@@ -559,6 +621,34 @@ namespace {
         return inst::offline::TryGetIconData(baseId, outData);
     }
 
+    std::string GetShopGridIconCachePath(const shopInstStuff::ShopItem& item)
+    {
+        if (!item.hasIconUrl)
+            return "";
+
+        std::string cacheDir = inst::config::appDir + "/shop_icons";
+        if (!std::filesystem::exists(cacheDir))
+            std::filesystem::create_directory(cacheDir);
+
+        std::string urlPath = item.iconUrl;
+        std::string ext = ".jpg";
+        auto queryPos = urlPath.find('?');
+        std::string cleanPath = queryPos == std::string::npos ? urlPath : urlPath.substr(0, queryPos);
+        auto dotPos = cleanPath.find_last_of('.');
+        if (dotPos != std::string::npos) {
+            std::string suffix = cleanPath.substr(dotPos);
+            if (suffix.size() <= 5 && suffix.find('/') == std::string::npos && suffix.find('?') == std::string::npos)
+                ext = suffix;
+        }
+
+        std::string fileName;
+        if (item.hasTitleId)
+            fileName = std::to_string(item.titleId);
+        else
+            fileName = std::to_string(std::hash<std::string>{}(item.iconUrl));
+        return cacheDir + "/" + fileName + ext;
+    }
+
     bool IsBaseTitleCurrentlyInstalled(u64 baseTitleId)
     {
         s32 metaCount = 0;
@@ -645,35 +735,6 @@ namespace {
         if (nameLimit < 8)
             nameLimit = 8;
         return inst::util::shortenString(item.name, nameLimit, true) + suffix;
-    }
-
-    std::string BuildMarqueeWindow(const std::string& text, std::size_t offset, int windowChars)
-    {
-        if (windowChars <= 0)
-            return std::string();
-        if (text.empty())
-            return std::string();
-
-        const std::size_t window = static_cast<std::size_t>(windowChars);
-        if (text.size() <= window)
-            return text;
-
-        const std::string padded = text + "   ";
-        const std::size_t cycle = padded.size();
-        if (cycle == 0)
-            return text;
-        offset %= cycle;
-
-        std::string out;
-        out.reserve(window);
-        std::size_t idx = offset;
-        for (std::size_t i = 0; i < window; i++) {
-            out.push_back(padded[idx]);
-            idx++;
-            if (idx >= cycle)
-                idx = 0;
-        }
-        return out;
     }
 
     std::string NormalizeDescriptionWhitespace(const std::string& text)
@@ -879,11 +940,6 @@ namespace inst::ui {
         this->listMarqueeTintRect->SetVisible(false);
         this->listMarqueeOverlayText = TextBlock::New(0, 0, "", 22);
         this->listMarqueeOverlayText->SetColor(COLOR("#FFFFFFFF"));
-        this->listMarqueeOverlayText->SetText("Ag");
-        this->listMarqueeSingleLineHeight = this->listMarqueeOverlayText->GetTextHeight();
-        if (this->listMarqueeSingleLineHeight <= 0)
-            this->listMarqueeSingleLineHeight = 1;
-        this->listMarqueeOverlayText->SetText("");
         this->listMarqueeOverlayText->SetVisible(false);
         this->listMarqueeClipBegin = MarqueeClipElement::New(true, &this->listMarqueeClipEnabled, &this->listMarqueeClipX, &this->listMarqueeClipY, &this->listMarqueeClipW, &this->listMarqueeClipH);
         this->listMarqueeClipEnd = MarqueeClipElement::New(false, &this->listMarqueeClipEnabled, &this->listMarqueeClipX, &this->listMarqueeClipY, &this->listMarqueeClipW, &this->listMarqueeClipH);
@@ -993,6 +1049,142 @@ namespace inst::ui {
         this->Add(this->saveVersionSelectorMenu);
         this->Add(this->saveVersionSelectorDetailText);
         this->Add(this->saveVersionSelectorHintText);
+        this->iconDownloadThread = std::thread([this]() {
+            this->iconDownloadThreadMain();
+        });
+    }
+
+    shopInstPage::~shopInstPage() {
+        this->iconDownloadStopRequested.store(true);
+        this->iconDownloadCv.notify_all();
+        if (this->iconDownloadThread.joinable())
+            this->iconDownloadThread.join();
+    }
+
+    void shopInstPage::resetIconDownloadState() {
+        {
+            std::lock_guard<std::mutex> lock(this->iconDownloadMutex);
+            this->iconDownloadGeneration++;
+            this->iconDownloadQueue.clear();
+            this->iconDownloadQueuedKeys.clear();
+            this->iconDownloadTotal = 0;
+            this->iconDownloadCompleted = 0;
+        }
+        this->iconDownloadUiDirty.store(false);
+        this->imageLoadingUntilTick = 0;
+        this->imageLoadingText->SetVisible(false);
+    }
+
+    void shopInstPage::queueIconDownload(const shopInstStuff::ShopItem& item, const std::string& filePath) {
+        if (!item.hasIconUrl || item.iconUrl.empty() || filePath.empty())
+            return;
+
+        std::string key = BuildItemIdentityKey(item);
+        if (key.empty())
+            key = item.iconUrl;
+
+        std::lock_guard<std::mutex> lock(this->iconDownloadMutex);
+        if (this->iconDownloadQueuedKeys.count(key))
+            return;
+
+        this->iconDownloadQueuedKeys.insert(key);
+        this->iconDownloadQueue.push_back({this->iconDownloadGeneration, key, item.iconUrl, filePath});
+        this->iconDownloadTotal++;
+        this->iconDownloadCv.notify_one();
+    }
+
+    void shopInstPage::refreshImageLoadingText(bool showCompleted) {
+        std::size_t total = 0;
+        std::size_t completed = 0;
+        {
+            std::lock_guard<std::mutex> lock(this->iconDownloadMutex);
+            total = this->iconDownloadTotal;
+            completed = this->iconDownloadCompleted;
+        }
+
+        if (total == 0) {
+            this->imageLoadingText->SetVisible(false);
+            return;
+        }
+
+        this->imageLoadingText->SetText(
+            "Fetching images " + std::to_string(completed) + "/" + std::to_string(total));
+        this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
+
+        if (completed < total) {
+            this->imageLoadingText->SetVisible(true);
+            return;
+        }
+
+        if (showCompleted && this->imageLoadingUntilTick == 0) {
+            const u64 now = armGetSystemTick();
+            const u64 freq = armGetSystemTickFreq();
+            this->imageLoadingUntilTick = now + (freq * 2);
+        }
+
+        if (this->imageLoadingUntilTick > 0) {
+            const u64 now = armGetSystemTick();
+            const bool show = now < this->imageLoadingUntilTick;
+            this->imageLoadingText->SetVisible(show);
+            if (!show) {
+                this->imageLoadingUntilTick = 0;
+                std::lock_guard<std::mutex> lock(this->iconDownloadMutex);
+                this->iconDownloadTotal = 0;
+                this->iconDownloadCompleted = 0;
+                this->iconDownloadQueuedKeys.clear();
+            }
+            return;
+        }
+
+        this->imageLoadingText->SetVisible(false);
+    }
+
+    void shopInstPage::iconDownloadThreadMain() {
+        while (true) {
+            IconDownloadRequest request;
+            {
+                std::unique_lock<std::mutex> lock(this->iconDownloadMutex);
+                this->iconDownloadCv.wait(lock, [this]() {
+                    return this->iconDownloadStopRequested.load() || !this->iconDownloadQueue.empty();
+                });
+                if (this->iconDownloadStopRequested.load())
+                    return;
+
+                request = this->iconDownloadQueue.front();
+                this->iconDownloadQueue.pop_front();
+            }
+
+            bool ok = true;
+            const std::string tempPath = request.filePath + ".part";
+            if (!std::filesystem::exists(request.filePath)) {
+                if (std::filesystem::exists(tempPath))
+                    std::filesystem::remove(tempPath);
+
+                ok = inst::curl::downloadImageWithAuth(request.iconUrl, tempPath.c_str(), inst::config::shopUser, inst::config::shopPass, 8000);
+                if (ok) {
+                    std::error_code ec;
+                    std::filesystem::rename(tempPath, request.filePath, ec);
+                    ok = !ec;
+                }
+            }
+
+            if (std::filesystem::exists(tempPath))
+                std::filesystem::remove(tempPath);
+            if (!ok && std::filesystem::exists(request.filePath))
+                std::filesystem::remove(request.filePath);
+
+            bool refreshCurrentUi = false;
+            {
+                std::lock_guard<std::mutex> lock(this->iconDownloadMutex);
+                if (request.generation == this->iconDownloadGeneration) {
+                    this->iconDownloadCompleted++;
+                    refreshCurrentUi = true;
+                }
+            }
+
+            if (refreshCurrentUi)
+                this->iconDownloadUiDirty.store(true);
+        }
     }
 
     bool shopInstPage::isAllSection() const {
@@ -1072,14 +1264,54 @@ namespace inst::ui {
         this->loadingBarFill->SetWidth((500 * percent) / 100);
     }
 
-    std::string shopInstPage::buildListMenuLabel(const shopInstStuff::ShopItem& item) const
+    void shopInstPage::getListTextBounds(int& textX, int& textWidth) const
     {
-        const std::string normalizedName = NormalizeSingleLineTitle(item.name);
+        textX = 0;
+        textWidth = 0;
+        if (this->menu == nullptr)
+            return;
+
+        const int menuX = this->menu->GetProcessedX();
+        const int menuW = this->menu->GetWidth();
+        textX = menuX + 25;
+        if (!this->isInstalledSection() && !this->isSaveSyncSection())
+            textX = menuX + 76;
+        int maxRowRight = menuX + menuW - 28;
+        const int previewSafeRight = menuX + 860;
+        if (maxRowRight > previewSafeRight)
+            maxRowRight = previewSafeRight;
+        if (maxRowRight < textX)
+            maxRowRight = textX;
+        textWidth = maxRowRight - textX;
+    }
+
+    static std::string BuildSingleLineGridTitle(const std::string& title)
+    {
+        const std::string normalized = OverflowText::NormalizeSingleLineText(title);
+        return ClipSingleLineByMenuRender(normalized, 18, 1260, 26, nullptr);
+    }
+
+    std::string shopInstPage::buildListMenuLabel(const shopInstStuff::ShopItem& item)
+    {
+        const std::string normalizedName = OverflowText::NormalizeSingleLineText(item.name);
         std::string sizeText = FormatSizeText(item.size);
         std::string suffix = sizeText.empty() ? "" : (" [" + sizeText + "]");
-        int nameLimit = ComputeListNameLimit(suffix);
+        std::string label = normalizedName + suffix;
 
-        return inst::util::shortenString(normalizedName, nameLimit, true) + suffix;
+        if (this->menu == nullptr)
+            return label;
+
+        int textX = 0;
+        int maxMenuLabelWidth = 0;
+        this->getListTextBounds(textX, maxMenuLabelWidth);
+        (void)textX;
+        if (maxMenuLabelWidth <= 0)
+            return label;
+        const int maxMenuLabelHeight = this->menu->GetItemSize() - 2;
+        constexpr int kShopListMenuFontSize = 22;
+        label = ClipSingleLinePrefixSuffixByMenuRender(
+            normalizedName, suffix, kShopListMenuFontSize, maxMenuLabelWidth, maxMenuLabelHeight, nullptr);
+        return label;
     }
 
     void shopInstPage::updateListMarquee(bool force)
@@ -1092,21 +1324,21 @@ namespace inst::ui {
             this->listMarqueeFadeRect->SetVisible(false);
             this->listMarqueeFadeAlpha = 0;
             this->listMarqueePhase = kListMarqueePhasePause;
-            this->listMarqueeWindowMode = false;
-            this->listMarqueeWindowChars = 0;
-            this->listMarqueeWindowCharOffset = 0;
+            this->listMarqueeEndPauseUntilTick = 0;
             this->listMarqueeFullLabel.clear();
         };
 
         if (this->shopGridMode || !this->menu->IsVisible()) {
             hideMarquee();
             this->listPrevSelectedIndex = -1;
+            this->listMarqueeIndex = -1;
             return;
         }
         auto& items = this->menu->GetItems();
         if (items.empty() || this->visibleItems.empty()) {
             hideMarquee();
             this->listPrevSelectedIndex = -1;
+            this->listMarqueeIndex = -1;
             return;
         }
 
@@ -1114,12 +1346,18 @@ namespace inst::ui {
         if (selectedIndex < 0 || selectedIndex >= static_cast<int>(this->visibleItems.size())) {
             hideMarquee();
             this->listPrevSelectedIndex = -1;
+            this->listMarqueeIndex = -1;
             return;
         }
 
         const u64 now = armGetSystemTick();
         const u64 freq = armGetSystemTickFreq();
+        if (freq == 0) {
+            hideMarquee();
+            return;
+        }
         const u64 startDelayTicks = (freq * kListMarqueeStartDelayMs) / 1000;
+        const u64 endPauseTicks = (freq * kListMarqueeEndPauseMs) / 1000;
         const u64 fadeDurationTicks = (freq * kListMarqueeFadeDurationMs) / 1000;
 
         const int itemCount = static_cast<int>(items.size());
@@ -1152,19 +1390,9 @@ namespace inst::ui {
         this->listPrevSelectedIndex = selectedIndex;
 
         const auto& item = this->visibleItems[static_cast<std::size_t>(selectedIndex)];
-        const std::string normalizedName = NormalizeSingleLineTitle(item.name);
+        const std::string normalizedName = OverflowText::NormalizeSingleLineText(item.name);
         std::string sizeText = FormatSizeText(item.size);
         std::string suffix = sizeText.empty() ? "" : (" [" + sizeText + "]");
-        int nameLimit = ComputeListNameLimit(suffix);
-
-        const bool shouldScroll = normalizedName.size() > static_cast<std::size_t>(nameLimit);
-        if (!shouldScroll) {
-            hideMarquee();
-            this->listMarqueeOffset = 0;
-            this->listMarqueeMaxOffset = 0;
-            this->listMarqueeSpeedRemainder = 0;
-            return;
-        }
 
         int row = selectedIndex - this->listVisibleTopIndex;
         if (row < 0 || row >= visibleCount) {
@@ -1173,72 +1401,43 @@ namespace inst::ui {
         }
 
         const int itemHeight = this->menu->GetItemSize();
-        const int menuX = this->menu->GetProcessedX();
-        const int menuW = this->menu->GetWidth();
         const int rowY = this->menu->GetProcessedY() + (row * itemHeight);
-        int textX = menuX + 25;
-        if (!this->isInstalledSection() && !this->isSaveSyncSection())
-            textX = menuX + 76;
-        const int maxRowRight = menuX + menuW - 28;
-        const int previewSafeRight = menuX + 860;
-        int maskRight = maxRowRight;
-        if (maskRight > previewSafeRight)
-            maskRight = previewSafeRight;
-        if (maskRight < textX)
-            maskRight = textX;
-        int maskWidth = maskRight - textX;
+        int textX = 0;
+        int maskWidth = 0;
+        this->getListTextBounds(textX, maskWidth);
 
         if (maskWidth <= 0) {
             hideMarquee();
             return;
         }
 
-        std::string label = normalizedName + suffix;
+        constexpr int kShopListMenuFontSize = 22;
+        constexpr int kRenderNoWrapWidth = 1279;
+        std::string label = ClipSingleLinePrefixSuffixByMenuRender(
+            normalizedName, suffix, kShopListMenuFontSize, kRenderNoWrapWidth, itemHeight - 2);
+        this->listMarqueeOverlayText->SetText(label);
+        this->listMarqueeMaxOffset = this->listMarqueeOverlayText->GetTextWidth() - maskWidth;
+        if (this->listMarqueeMaxOffset < 0)
+            this->listMarqueeMaxOffset = 0;
+
+        if (this->listMarqueeMaxOffset <= 0) {
+            hideMarquee();
+            this->listMarqueeOffset = 0;
+            this->listMarqueeSpeedRemainder = 0;
+            return;
+        }
+
         if (this->listMarqueeIndex != selectedIndex || force || this->listMarqueeFullLabel != label) {
             this->listMarqueeIndex = selectedIndex;
             this->listMarqueeOffset = 0;
-            this->listMarqueeMaxOffset = 0;
             this->listMarqueeLastTick = now;
             this->listMarqueePauseUntilTick = now + startDelayTicks;
+            this->listMarqueeEndPauseUntilTick = 0;
             this->listMarqueeSpeedRemainder = 0;
             this->listMarqueeFadeStartTick = 0;
             this->listMarqueePhase = kListMarqueePhasePause;
             this->listMarqueeFadeAlpha = 0;
-            this->listMarqueeWindowMode = false;
-            this->listMarqueeWindowChars = 0;
-            this->listMarqueeWindowCharOffset = 0;
             this->listMarqueeFullLabel = label;
-            this->listMarqueeOverlayText->SetText(label);
-
-            int oneLineHeight = this->listMarqueeSingleLineHeight;
-            if (oneLineHeight <= 0)
-                oneLineHeight = itemHeight;
-            const int wrapThreshold = oneLineHeight + 2;
-            if (this->listMarqueeOverlayText->GetTextHeight() > wrapThreshold) {
-                this->listMarqueeWindowMode = true;
-                int windowChars = 120;
-                if (windowChars > static_cast<int>(label.size()))
-                    windowChars = static_cast<int>(label.size());
-                if (windowChars < 4)
-                    windowChars = 4;
-                this->listMarqueeOverlayText->SetText(BuildMarqueeWindow(label, 0, windowChars));
-                while (this->listMarqueeOverlayText->GetTextHeight() > wrapThreshold && windowChars > 4) {
-                    windowChars -= 4;
-                    this->listMarqueeOverlayText->SetText(BuildMarqueeWindow(label, 0, windowChars));
-                }
-                this->listMarqueeWindowChars = windowChars;
-            }
-        }
-
-        if (this->listMarqueeWindowMode) {
-            int cycleChars = static_cast<int>(this->listMarqueeFullLabel.size()) + 3;
-            if (cycleChars < 0)
-                cycleChars = 0;
-            this->listMarqueeMaxOffset = cycleChars * kListMarqueeWindowCharStepPx;
-        } else {
-            this->listMarqueeMaxOffset = this->listMarqueeOverlayText->GetTextWidth() - maskWidth;
-            if (this->listMarqueeMaxOffset < 0)
-                this->listMarqueeMaxOffset = 0;
         }
 
         if (this->listMarqueeMaxOffset > 0) {
@@ -1262,14 +1461,21 @@ namespace inst::ui {
                             this->listMarqueeOffset += advance;
                             if (this->listMarqueeOffset >= this->listMarqueeMaxOffset) {
                                 this->listMarqueeOffset = this->listMarqueeMaxOffset;
-                                this->listMarqueePhase = kListMarqueePhaseFadeOut;
-                                this->listMarqueeFadeStartTick = now;
-                                this->listMarqueeFadeAlpha = 0;
+                                this->listMarqueePhase = kListMarqueePhaseEndPause;
+                                this->listMarqueeEndPauseUntilTick = now + endPauseTicks;
                             }
                         }
                     }
                     break;
                 }
+                case kListMarqueePhaseEndPause:
+                    this->listMarqueeFadeAlpha = 0;
+                    if (now >= this->listMarqueeEndPauseUntilTick) {
+                        this->listMarqueePhase = kListMarqueePhaseFadeOut;
+                        this->listMarqueeFadeStartTick = now;
+                        this->listMarqueeFadeAlpha = 0;
+                    }
+                    break;
                 case kListMarqueePhaseFadeOut: {
                     if (fadeDurationTicks == 0) {
                         this->listMarqueeFadeAlpha = 255;
@@ -1328,16 +1534,7 @@ namespace inst::ui {
         if (this->listMarqueeOffset > this->listMarqueeMaxOffset)
             this->listMarqueeOffset = this->listMarqueeMaxOffset;
 
-        int drawOffsetPx = this->listMarqueeOffset;
-        if (this->listMarqueeWindowMode) {
-            std::size_t offsetChars = static_cast<std::size_t>(this->listMarqueeOffset / kListMarqueeWindowCharStepPx);
-            if (offsetChars != this->listMarqueeWindowCharOffset || force) {
-                this->listMarqueeWindowCharOffset = offsetChars;
-                this->listMarqueeOverlayText->SetText(BuildMarqueeWindow(this->listMarqueeFullLabel, offsetChars, this->listMarqueeWindowChars));
-            }
-            drawOffsetPx = this->listMarqueeOffset % kListMarqueeWindowCharStepPx;
-        }
-
+        this->listMarqueeOverlayText->SetText(label);
         int textY = rowY + ((itemHeight - this->listMarqueeOverlayText->GetTextHeight()) / 2);
         pu::ui::Color marqueeBaseColor = this->menu->GetColor();
         marqueeBaseColor.A = 255;
@@ -1366,7 +1563,7 @@ namespace inst::ui {
         this->listMarqueeClipY = rowY;
         this->listMarqueeClipW = maskWidth;
         this->listMarqueeClipH = itemHeight;
-        this->listMarqueeOverlayText->SetX(textX - drawOffsetPx);
+        this->listMarqueeOverlayText->SetX(textX - this->listMarqueeOffset);
         this->listMarqueeOverlayText->SetY(textY);
         this->listMarqueeOverlayText->SetVisible(true);
 
@@ -1400,15 +1597,17 @@ namespace inst::ui {
     }
 
     void shopInstPage::buildInstalledSection() {
-        std::vector<shopInstStuff::ShopItem> installedItems;
+        (void)this->ensureInstalledSectionBuilt();
+    }
+
+    bool shopInstPage::buildInstalledSnapshot() {
+        if (this->installedSnapshot.ready)
+            return true;
+
+        this->installedSnapshot = {};
         Result rc = nsInitialize();
         if (R_FAILED(rc))
-            return;
-        rc = ncmInitialize();
-        if (R_FAILED(rc)) {
-            nsExit();
-            return;
-        }
+            return false;
 
         const s32 chunk = 64;
         s32 offset = 0;
@@ -1421,56 +1620,117 @@ namespace inst::ui {
 
             for (s32 i = 0; i < outCount; i++) {
                 const u64 baseId = records[i].application_id;
-                if (!IsBaseTitleCurrentlyInstalled(baseId))
+                const bool installed = IsBaseTitleCurrentlyInstalled(baseId);
+                this->installedSnapshot.baseInstalled[baseId] = installed;
+                if (!installed)
                     continue;
-                shopInstStuff::ShopItem baseItem;
-                baseItem.name = tin::util::GetTitleName(baseId, NcmContentMetaType_Application);
-                baseItem.url = "";
-                baseItem.size = 0;
-                baseItem.titleId = baseId;
-                baseItem.hasTitleId = true;
-                baseItem.appType = NcmContentMetaType_Application;
-                installedItems.push_back(baseItem);
+
+                this->installedSnapshot.installedBaseIds.push_back(baseId);
 
                 s32 metaCount = 0;
                 if (R_SUCCEEDED(nsCountApplicationContentMeta(baseId, &metaCount)) && metaCount > 0) {
-                    std::vector<NsApplicationContentMetaStatus> list(metaCount);
+                    std::vector<NsApplicationContentMetaStatus> list(static_cast<std::size_t>(metaCount));
                     s32 metaOut = 0;
                     if (R_SUCCEEDED(nsListApplicationContentMetaStatus(baseId, 0, list.data(), metaCount, &metaOut)) && metaOut > 0) {
                         for (s32 j = 0; j < metaOut; j++) {
-                            if (list[j].meta_type != NcmContentMetaType_Patch && list[j].meta_type != NcmContentMetaType_AddOnContent)
-                                continue;
-                            shopInstStuff::ShopItem item;
-                            item.titleId = list[j].application_id;
-                            item.hasTitleId = true;
-                            item.appVersion = list[j].version;
-                            item.hasAppVersion = true;
-                            item.appType = list[j].meta_type;
-                            item.name = tin::util::GetTitleName(item.titleId, static_cast<NcmContentMetaType>(item.appType));
-                            item.url = "";
-                            item.size = 0;
-                            installedItems.push_back(item);
+                            if (list[j].meta_type == NcmContentMetaType_Patch) {
+                                auto& version = this->installedSnapshot.installedUpdateVersion[baseId];
+                                if (list[j].version > version)
+                                    version = list[j].version;
+                            } else if (list[j].meta_type == NcmContentMetaType_AddOnContent) {
+                                this->installedSnapshot.installedDlcIds.insert(list[j].application_id);
+                            }
                         }
                     }
                 }
             }
+
             offset += outCount;
         }
 
         nsExit();
+        this->installedSnapshot.ready = true;
+        return true;
+    }
 
-        if (installedItems.empty())
+    void shopInstPage::ensureInstalledSectionPlaceholder() {
+        if (inst::config::shopHideInstalledSection)
             return;
+
+        auto it = std::find_if(this->shopSections.begin(), this->shopSections.end(), [](const auto& section) {
+            return section.id == "installed";
+        });
+        if (it != this->shopSections.end())
+            return;
+
+        shopInstStuff::ShopSection installedSection;
+        installedSection.id = "installed";
+        installedSection.title = "Installed";
+        this->shopSections.insert(this->shopSections.begin(), std::move(installedSection));
+    }
+
+    bool shopInstPage::ensureInstalledSectionBuilt() {
+        this->ensureInstalledSectionPlaceholder();
+        if (this->installedSnapshot.installedSectionBuilt)
+            return true;
+        if (!this->buildInstalledSnapshot())
+            return false;
+
+        auto sectionIt = std::find_if(this->shopSections.begin(), this->shopSections.end(), [](const auto& section) {
+            return section.id == "installed";
+        });
+        if (sectionIt == this->shopSections.end())
+            return false;
+
+        Result rc = nsInitialize();
+        if (R_FAILED(rc))
+            return false;
+
+        std::vector<shopInstStuff::ShopItem> installedItems;
+        installedItems.reserve(this->installedSnapshot.installedBaseIds.size() * 2);
+
+        for (const auto baseId : this->installedSnapshot.installedBaseIds) {
+            shopInstStuff::ShopItem baseItem;
+            baseItem.name = tin::util::GetTitleName(baseId, NcmContentMetaType_Application);
+            baseItem.url = "";
+            baseItem.size = 0;
+            baseItem.titleId = baseId;
+            baseItem.hasTitleId = true;
+            baseItem.appType = NcmContentMetaType_Application;
+            installedItems.push_back(baseItem);
+
+            s32 metaCount = 0;
+            if (R_SUCCEEDED(nsCountApplicationContentMeta(baseId, &metaCount)) && metaCount > 0) {
+                std::vector<NsApplicationContentMetaStatus> list(static_cast<std::size_t>(metaCount));
+                s32 metaOut = 0;
+                if (R_SUCCEEDED(nsListApplicationContentMetaStatus(baseId, 0, list.data(), metaCount, &metaOut)) && metaOut > 0) {
+                    for (s32 j = 0; j < metaOut; j++) {
+                        if (list[j].meta_type != NcmContentMetaType_Patch && list[j].meta_type != NcmContentMetaType_AddOnContent)
+                            continue;
+                        shopInstStuff::ShopItem item;
+                        item.titleId = list[j].application_id;
+                        item.hasTitleId = true;
+                        item.appVersion = list[j].version;
+                        item.hasAppVersion = true;
+                        item.appType = list[j].meta_type;
+                        item.name = tin::util::GetTitleName(item.titleId, static_cast<NcmContentMetaType>(item.appType));
+                        item.url = "";
+                        item.size = 0;
+                        installedItems.push_back(item);
+                    }
+                }
+            }
+        }
+
+        nsExit();
 
         std::sort(installedItems.begin(), installedItems.end(), [](const auto& a, const auto& b) {
             return inst::util::ignoreCaseCompare(a.name, b.name);
         });
 
-        shopInstStuff::ShopSection installedSection;
-        installedSection.id = "installed";
-        installedSection.title = "Installed";
-        installedSection.items = std::move(installedItems);
-        this->shopSections.insert(this->shopSections.begin(), std::move(installedSection));
+        sectionIt->items = std::move(installedItems);
+        this->installedSnapshot.installedSectionBuilt = true;
+        return true;
     }
 
     void shopInstPage::buildSaveSyncSection(const std::string& shopUrl) {
@@ -1913,6 +2173,8 @@ namespace inst::ui {
     void shopInstPage::buildLegacyOwnedSections() {
         if (this->shopSections.empty())
             return;
+        if (!this->buildInstalledSnapshot())
+            return;
 
         auto normalizeSectionId = [](std::string value) {
             std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -1941,20 +2203,11 @@ namespace inst::ui {
         if (!hasAllSection || (hasUpdatesSection && hasDlcSection))
             return;
 
-        Result rc = nsInitialize();
-        if (R_FAILED(rc))
-            return;
-
-        std::unordered_map<std::uint64_t, bool> baseInstalled;
         auto isBaseInstalled = [&](std::uint64_t baseTitleId) {
             if (baseTitleId == 0)
                 return false;
-            const auto it = baseInstalled.find(baseTitleId);
-            if (it != baseInstalled.end())
-                return it->second;
-            const bool installed = IsBaseTitleCurrentlyInstalled(baseTitleId);
-            baseInstalled[baseTitleId] = installed;
-            return installed;
+            const auto it = this->installedSnapshot.baseInstalled.find(baseTitleId);
+            return (it != this->installedSnapshot.baseInstalled.end()) && it->second;
         };
 
         std::vector<shopInstStuff::ShopItem> updates;
@@ -1986,7 +2239,7 @@ namespace inst::ui {
                 }
 
                 if (!hasDlcSection && IsDlcItem(item)) {
-                    if (item.hasTitleId && tin::util::IsTitleInstalled(item.titleId))
+                    if (item.hasTitleId && this->installedSnapshot.installedDlcIds.count(item.titleId))
                         continue;
                     const std::string key = BuildItemIdentityKey(item);
                     if (!key.empty() && !seenDlcKeys.insert(key).second)
@@ -1995,8 +2248,6 @@ namespace inst::ui {
                 }
             }
         }
-
-        nsExit();
 
         auto sortByName = [](std::vector<shopInstStuff::ShopItem>& items) {
             std::sort(items.begin(), items.end(), [](const auto& a, const auto& b) {
@@ -2044,19 +2295,14 @@ namespace inst::ui {
     void shopInstPage::filterOwnedSections() {
         if (this->shopSections.empty())
             return;
-
-        Result rc = nsInitialize();
-        if (R_FAILED(rc)) {
-            ShopDlcTrace("filterOwnedSections nsInitialize failed rc=0x%08X", rc);
+        if (!this->buildInstalledSnapshot()) {
+            ShopDlcTrace("filterOwnedSections buildInstalledSnapshot failed");
             return;
         }
-        const bool ncmReady = R_SUCCEEDED(ncmInitialize());
-        ShopDlcTrace("filterOwnedSections begin sections=%llu ncmReady=%d", static_cast<unsigned long long>(this->shopSections.size()), ncmReady ? 1 : 0);
-
-        std::unordered_map<std::uint64_t, std::uint32_t> installedUpdateVersion;
-        std::unordered_map<std::uint64_t, bool> baseInstalled;
-        std::unordered_map<std::uint64_t, bool> metaLoaded;
-        std::unordered_map<std::uint64_t, bool> dlcInstalledById;
+        ShopDlcTrace("filterOwnedSections begin sections=%llu snapshotBases=%llu snapshotDlcs=%llu",
+            static_cast<unsigned long long>(this->shopSections.size()),
+            static_cast<unsigned long long>(this->installedSnapshot.baseInstalled.size()),
+            static_cast<unsigned long long>(this->installedSnapshot.installedDlcIds.size()));
         const bool enforceBaseInstallForDlcSection = true;
         ShopDlcTrace("filter mode nativeDlcSectionPresent=%d enforceBaseInstallForDlcSection=%d",
             this->nativeDlcSectionPresent ? 1 : 0,
@@ -2082,111 +2328,23 @@ namespace inst::ui {
             return false;
         };
 
-        auto loadInstalledMeta = [&](std::uint64_t baseTitleId) {
-            const auto loadedIt = metaLoaded.find(baseTitleId);
-            if (loadedIt != metaLoaded.end())
-                return;
-
-            metaLoaded[baseTitleId] = true;
-            s32 metaCount = 0;
-            if (R_FAILED(nsCountApplicationContentMeta(baseTitleId, &metaCount)) || metaCount <= 0)
-                return;
-
-            std::vector<NsApplicationContentMetaStatus> list(static_cast<std::size_t>(metaCount));
-            s32 metaOut = 0;
-            if (R_FAILED(nsListApplicationContentMetaStatus(baseTitleId, 0, list.data(), metaCount, &metaOut)) || metaOut <= 0)
-                return;
-
-            for (s32 i = 0; i < metaOut; i++) {
-                if (list[i].meta_type == NcmContentMetaType_Patch) {
-                    auto& version = installedUpdateVersion[baseTitleId];
-                    if (list[i].version > version)
-                        version = list[i].version;
-                }
-            }
-        };
-
         auto isDlcInstalledByTitleId = [&](std::uint64_t dlcTitleId) {
-            if (!ncmReady || dlcTitleId == 0)
+            if (dlcTitleId == 0)
                 return false;
-            auto cached = dlcInstalledById.find(dlcTitleId);
-            if (cached != dlcInstalledById.end())
-                return cached->second;
-
-            bool installed = false;
-            const NcmStorageId storages[] = {NcmStorageId_BuiltInUser, NcmStorageId_SdCard};
-            for (auto storage : storages) {
-                NcmContentMetaDatabase db;
-                if (R_FAILED(ncmOpenContentMetaDatabase(&db, storage)))
-                    continue;
-                NcmContentMetaKey key = {};
-                if (R_SUCCEEDED(ncmContentMetaDatabaseGetLatestContentMetaKey(&db, &key, dlcTitleId))) {
-                    if (key.type == NcmContentMetaType_AddOnContent && key.id == dlcTitleId) {
-                        installed = true;
-                        ncmContentMetaDatabaseClose(&db);
-                        break;
-                    }
-                }
-                ncmContentMetaDatabaseClose(&db);
-            }
-
-            dlcInstalledById[dlcTitleId] = installed;
-            return installed;
+            return this->installedSnapshot.installedDlcIds.count(dlcTitleId) > 0;
         };
-
-        const s32 chunk = 64;
-        s32 offset = 0;
-        while (true) {
-            NsApplicationRecord records[chunk];
-            s32 outCount = 0;
-            if (R_FAILED(nsListApplicationRecord(records, chunk, offset, &outCount)) || outCount <= 0)
-                break;
-            for (s32 i = 0; i < outCount; i++) {
-                const auto titleId = records[i].application_id;
-                const bool installed = IsBaseTitleCurrentlyInstalled(titleId);
-                baseInstalled[titleId] = installed;
-                if (installed)
-                    loadInstalledMeta(titleId);
-            }
-            offset += outCount;
-        }
-        std::size_t installedBaseCount = 0;
-        for (const auto& entry : baseInstalled) {
-            if (entry.second)
-                installedBaseCount++;
-        }
-        ShopDlcTrace("filter base scan done knownBases=%llu installedBases=%llu", static_cast<unsigned long long>(baseInstalled.size()), static_cast<unsigned long long>(installedBaseCount));
 
         auto isBaseInstalled = [&](const shopInstStuff::ShopItem& item, std::uint32_t& outVersion) {
             std::uint64_t baseTitleId = 0;
             if (!DeriveBaseTitleId(item, baseTitleId))
                 return false;
-            auto baseIt = baseInstalled.find(baseTitleId);
-            if (baseIt != baseInstalled.end()) {
-                if (baseIt->second) {
-                    loadInstalledMeta(baseTitleId);
-                    auto verIt = installedUpdateVersion.find(baseTitleId);
-                    if (verIt != installedUpdateVersion.end()) {
-                        outVersion = verIt->second;
-                    } else {
-                        tin::util::GetInstalledUpdateVersion(baseTitleId, outVersion);
-                        if (outVersion == 0)
-                            TryGetInstalledUpdateVersionNcm(baseTitleId, outVersion);
-                        installedUpdateVersion[baseTitleId] = outVersion;
-                    }
-                }
-                return baseIt->second;
-            }
-            bool installed = IsBaseTitleCurrentlyInstalled(baseTitleId);
-            if (installed) {
-                loadInstalledMeta(baseTitleId);
-                tin::util::GetInstalledUpdateVersion(baseTitleId, outVersion);
-                if (outVersion == 0)
-                    TryGetInstalledUpdateVersionNcm(baseTitleId, outVersion);
-            }
-            baseInstalled[baseTitleId] = installed;
-            installedUpdateVersion[baseTitleId] = outVersion;
-            return installed;
+            const auto baseIt = this->installedSnapshot.baseInstalled.find(baseTitleId);
+            if (baseIt == this->installedSnapshot.baseInstalled.end() || !baseIt->second)
+                return false;
+
+            const auto verIt = this->installedSnapshot.installedUpdateVersion.find(baseTitleId);
+            outVersion = (verIt != this->installedSnapshot.installedUpdateVersion.end()) ? verIt->second : 0;
+            return true;
         };
 
         auto isDlcInstalled = [&](const shopInstStuff::ShopItem& item) {
@@ -2325,22 +2483,19 @@ namespace inst::ui {
             appendTypeLabels(section);
         }
 
-        if (ncmReady)
-            ncmExit();
-        nsExit();
     }
 
     void shopInstPage::updatePreview() {
         if (this->shopGridMode) {
             this->previewImage->SetVisible(false);
             this->previewKey.clear();
-            this->imageLoadingText->SetVisible(false);
+            this->refreshImageLoadingText();
             return;
         }
         if (this->visibleItems.empty()) {
             this->previewImage->SetVisible(false);
             this->previewKey.clear();
-            this->imageLoadingText->SetVisible(false);
+            this->refreshImageLoadingText();
             return;
         }
 
@@ -2350,8 +2505,6 @@ namespace inst::ui {
         const auto& item = this->visibleItems[selectedIndex];
         std::uint64_t offlineIconBaseId = 0;
         const bool hasOfflineIcon = HasOfflineIconForItem(item, &offlineIconBaseId);
-        const bool offlinePackAvailable = inst::offline::HasPackedIcons();
-
         std::string key;
         if (item.url.empty()) {
             key = "installed:" + std::to_string(item.titleId);
@@ -2363,32 +2516,18 @@ namespace inst::ui {
             key = item.url;
         }
 
-        if (key == this->previewKey)
-            return;
+        const bool selectionChanged = key != this->previewKey;
         this->previewKey = key;
-
-        bool didDownload = false;
-        bool loadingShown = false;
+        const bool previewNeedsRefresh = this->iconDownloadUiDirty.exchange(false);
+        if (!selectionChanged && !previewNeedsRefresh) {
+            this->refreshImageLoadingText(true);
+            return;
+        }
         auto applyPreviewLayout = [&]() {
             this->previewImage->SetX(900);
             this->previewImage->SetY(230);
             this->previewImage->SetWidth(320);
             this->previewImage->SetHeight(320);
-        };
-        auto updateLoadingText = [&]() {
-            if (didDownload) {
-                const u64 now = armGetSystemTick();
-                const u64 freq = armGetSystemTickFreq();
-                this->imageLoadingUntilTick = now + (freq * 2);
-            }
-            if (this->imageLoadingUntilTick > 0) {
-                const u64 now = armGetSystemTick();
-                bool show = now < this->imageLoadingUntilTick;
-                this->imageLoadingText->SetVisible(show);
-                if (show) {
-                    this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
-                }
-            }
         };
 
         if (item.url.empty()) {
@@ -2414,7 +2553,7 @@ namespace inst::ui {
             this->previewImage->SetImage("romfs:/images/icons/title-placeholder.png");
             applyPreviewLayout();
             this->previewImage->SetVisible(true);
-            updateLoadingText();
+            this->refreshImageLoadingText();
             return;
         }
 
@@ -2424,69 +2563,29 @@ namespace inst::ui {
                 this->previewImage->SetJpegImage(offlineIconData.data(), static_cast<s32>(offlineIconData.size()));
                 applyPreviewLayout();
                 this->previewImage->SetVisible(true);
-                updateLoadingText();
+                this->refreshImageLoadingText();
                 return;
             }
         }
 
-        if (!offlinePackAvailable && item.hasIconUrl) {
-            std::string cacheDir = inst::config::appDir + "/shop_icons";
-            if (!std::filesystem::exists(cacheDir))
-                std::filesystem::create_directory(cacheDir);
-
-            std::string urlPath = item.iconUrl;
-            std::string ext = ".jpg";
-            auto queryPos = urlPath.find('?');
-            std::string cleanPath = queryPos == std::string::npos ? urlPath : urlPath.substr(0, queryPos);
-            auto dotPos = cleanPath.find_last_of('.');
-            if (dotPos != std::string::npos) {
-                std::string suffix = cleanPath.substr(dotPos);
-                if (suffix.size() <= 5 && suffix.find('/') == std::string::npos && suffix.find('?') == std::string::npos)
-                    ext = suffix;
-            }
-
-            std::string fileName;
-            if (item.hasTitleId)
-                fileName = std::to_string(item.titleId);
-            else
-                fileName = std::to_string(std::hash<std::string>{}(item.iconUrl));
-            std::string filePath = cacheDir + "/" + fileName + ext;
-
-            if (!std::filesystem::exists(filePath)) {
-                if (!loadingShown) {
-                    this->imageLoadingText->SetText("Fetching images 0/1");
-                    this->imageLoadingText->SetVisible(true);
-                    this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
-                    mainApp->CallForRender();
-                    loadingShown = true;
-                }
-                didDownload = true;
-                bool ok = inst::curl::downloadImageWithAuth(item.iconUrl, filePath.c_str(), inst::config::shopUser, inst::config::shopPass, 8000);
-                if (!ok) {
-                    if (std::filesystem::exists(filePath))
-                        std::filesystem::remove(filePath);
-                }
-            }
-
+        if (item.hasIconUrl) {
+            const std::string filePath = GetShopGridIconCachePath(item);
             if (std::filesystem::exists(filePath)) {
                 this->previewImage->SetImage(filePath);
                 applyPreviewLayout();
                 this->previewImage->SetVisible(true);
-                if (loadingShown) {
-                    this->imageLoadingText->SetText("Fetching images 1/1");
-                    this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
-                    mainApp->CallForRender();
-                }
-                updateLoadingText();
+                this->refreshImageLoadingText(true);
                 return;
             }
 
+            this->queueIconDownload(item, filePath);
+            this->refreshImageLoadingText();
         }
 
         this->previewImage->SetImage("romfs:/images/icons/title-placeholder.png");
         applyPreviewLayout();
         this->previewImage->SetVisible(true);
-        updateLoadingText();
+        this->refreshImageLoadingText();
     }
 
 
@@ -2557,6 +2656,9 @@ namespace inst::ui {
 
     void shopInstPage::drawMenuItems(bool clearItems) {
         if (clearItems) this->selectedItems.clear();
+        this->resetIconDownloadState();
+        if (this->isInstalledSection())
+            this->ensureInstalledSectionBuilt();
         this->emptySectionText->SetVisible(false);
         this->listMarqueeMaskRect->SetVisible(false);
         this->listMarqueeTintRect->SetVisible(false);
@@ -2665,11 +2767,11 @@ namespace inst::ui {
         this->listMarqueeIndex = -1;
         this->listVisibleTopIndex = 0;
         this->listPrevSelectedIndex = -1;
-        this->listRenderedSelectedIndex = this->menu->GetSelectedIndex();
         this->listMarqueeOffset = 0;
         this->listMarqueeMaxOffset = 0;
         this->listMarqueeLastTick = 0;
         this->listMarqueePauseUntilTick = 0;
+        this->listMarqueeEndPauseUntilTick = 0;
         this->listMarqueeSpeedRemainder = 0;
         this->listMarqueeFadeStartTick = 0;
         this->listMarqueePhase = kListMarqueePhasePause;
@@ -2792,7 +2894,7 @@ namespace inst::ui {
 
         if (this->gridSelectedIndex >= 0 && this->gridSelectedIndex < (int)this->visibleItems.size()) {
             std::string title = BuildGridTitleWithSize(this->visibleItems[this->gridSelectedIndex]);
-            this->gridTitleText->SetText(title);
+            this->gridTitleText->SetText(BuildSingleLineGridTitle(title));
             this->gridTitleText->SetVisible(true);
         } else {
             this->gridTitleText->SetVisible(false);
@@ -2832,54 +2934,8 @@ namespace inst::ui {
         int page = this->shopGridIndex / kGridItemsPerPage;
         int pageStart = page * kGridItemsPerPage;
         int maxIndex = (int)this->visibleItems.size();
-        const bool offlinePackAvailable = inst::offline::HasPackedIcons();
-
-        bool didDownload = false;
         if (page != this->shopGridPage) {
-            std::string cacheDir = inst::config::appDir + "/shop_icons";
-            if (!std::filesystem::exists(cacheDir))
-                std::filesystem::create_directory(cacheDir);
-            int totalToDownload = 0;
-            for (int i = 0; i < kGridItemsPerPage; i++) {
-                int itemIndex = pageStart + i;
-                if (itemIndex >= maxIndex)
-                    continue;
-                const auto& item = this->visibleItems[itemIndex];
-                if (HasOfflineIconForItem(item))
-                    continue;
-                if (offlinePackAvailable)
-                    continue;
-                if (!item.hasIconUrl)
-                    continue;
-                std::string urlPath = item.iconUrl;
-                std::string ext = ".jpg";
-                auto queryPos = urlPath.find('?');
-                std::string cleanPath = queryPos == std::string::npos ? urlPath : urlPath.substr(0, queryPos);
-                auto dotPos = cleanPath.find_last_of('.');
-                if (dotPos != std::string::npos) {
-                    std::string suffix = cleanPath.substr(dotPos);
-                    if (suffix.size() <= 5 && suffix.find('/') == std::string::npos && suffix.find('?') == std::string::npos)
-                        ext = suffix;
-                }
-                std::string fileName;
-                if (item.hasTitleId)
-                    fileName = std::to_string(item.titleId);
-                else
-                    fileName = std::to_string(std::hash<std::string>{}(item.iconUrl));
-                std::string filePath = cacheDir + "/" + fileName + ext;
-                if (!std::filesystem::exists(filePath))
-                    totalToDownload++;
-            }
-
-            bool loadingShown = false;
-            int downloadedCount = 0;
-            if (totalToDownload > 0) {
-                this->imageLoadingText->SetText("Fetching images 0/" + std::to_string(totalToDownload));
-                this->imageLoadingText->SetVisible(true);
-                this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
-                mainApp->CallForRender();
-                loadingShown = true;
-            }
+            this->resetIconDownloadState();
 
             for (int i = 0; i < kGridItemsPerPage; i++) {
                 int itemIndex = pageStart + i;
@@ -2904,70 +2960,46 @@ namespace inst::ui {
                     this->gridImages[i]->SetWidth(kGridTileWidth);
                     this->gridImages[i]->SetHeight(kGridTileHeight);
                     applied = true;
-                } else if (!offlinePackAvailable && item.hasIconUrl) {
-                    std::string urlPath = item.iconUrl;
-                    std::string ext = ".jpg";
-                    auto queryPos = urlPath.find('?');
-                    std::string cleanPath = queryPos == std::string::npos ? urlPath : urlPath.substr(0, queryPos);
-                    auto dotPos = cleanPath.find_last_of('.');
-                    if (dotPos != std::string::npos) {
-                        std::string suffix = cleanPath.substr(dotPos);
-                        if (suffix.size() <= 5 && suffix.find('/') == std::string::npos && suffix.find('?') == std::string::npos)
-                            ext = suffix;
+                } else if (item.hasIconUrl) {
+                    std::string filePath = GetShopGridIconCachePath(item);
+                    if (!filePath.empty() && std::filesystem::exists(filePath)) {
+                        this->gridImages[i]->SetImage(filePath);
+                        this->gridImages[i]->SetWidth(kGridTileWidth);
+                        this->gridImages[i]->SetHeight(kGridTileHeight);
+                        applied = true;
+                    } else if (!filePath.empty()) {
+                        this->queueIconDownload(item, filePath);
                     }
+                }
 
-                    std::string fileName;
-                    if (item.hasTitleId)
-                        fileName = std::to_string(item.titleId);
-                    else
-                        fileName = std::to_string(std::hash<std::string>{}(item.iconUrl));
-                    std::string filePath = cacheDir + "/" + fileName + ext;
-
-                    if (!std::filesystem::exists(filePath)) {
-                        didDownload = true;
-                        bool ok = inst::curl::downloadImageWithAuth(item.iconUrl, filePath.c_str(), inst::config::shopUser, inst::config::shopPass, 8000);
-                        if (!ok && std::filesystem::exists(filePath))
-                            std::filesystem::remove(filePath);
-                        if (loadingShown) {
-                            downloadedCount++;
-                            this->imageLoadingText->SetText("Fetching images " + std::to_string(downloadedCount) + "/" + std::to_string(totalToDownload));
-                            this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
-                            mainApp->CallForRender();
-                        }
-                    }
-
-                if (std::filesystem::exists(filePath)) {
-                    this->gridImages[i]->SetImage(filePath);
+                if (!applied) {
+                    this->gridImages[i]->SetImage("romfs:/images/icons/title-placeholder.png");
                     this->gridImages[i]->SetWidth(kGridTileWidth);
                     this->gridImages[i]->SetHeight(kGridTileHeight);
-                    applied = true;
                 }
+                this->gridImages[i]->SetVisible(true);
             }
 
-            if (!applied) {
-                this->gridImages[i]->SetImage("romfs:/images/icons/title-placeholder.png");
-                this->gridImages[i]->SetWidth(kGridTileWidth);
-                this->gridImages[i]->SetHeight(kGridTileHeight);
-            }
-            this->gridImages[i]->SetVisible(true);
-
-        }
             this->shopGridPage = page;
         }
 
-        if (didDownload) {
-            const u64 now = armGetSystemTick();
-            const u64 freq = armGetSystemTickFreq();
-            this->imageLoadingUntilTick = now + (freq * 2);
-        }
-        if (this->imageLoadingUntilTick > 0) {
-            const u64 now = armGetSystemTick();
-            bool show = now < this->imageLoadingUntilTick;
-            this->imageLoadingText->SetVisible(show);
-            if (show) {
-                this->imageLoadingText->SetX(1280 - this->imageLoadingText->GetTextWidth() - 10);
+        if (this->iconDownloadUiDirty.exchange(false)) {
+            for (int i = 0; i < kGridItemsPerPage; i++) {
+                const int itemIndex = pageStart + i;
+                if (itemIndex < 0 || itemIndex >= maxIndex)
+                    continue;
+
+                const auto& item = this->visibleItems[itemIndex];
+                const std::string filePath = GetShopGridIconCachePath(item);
+                if (!filePath.empty() && std::filesystem::exists(filePath)) {
+                    this->gridImages[i]->SetImage(filePath);
+                    this->gridImages[i]->SetWidth(kGridTileWidth);
+                    this->gridImages[i]->SetHeight(kGridTileHeight);
+                    this->gridImages[i]->SetVisible(true);
+                }
             }
         }
+        this->refreshImageLoadingText(true);
 
         for (int i = 0; i < kGridItemsPerPage; i++) {
             int itemIndex = pageStart + i;
@@ -3017,7 +3049,7 @@ namespace inst::ui {
 
         if (this->shopGridIndex >= 0 && this->shopGridIndex < (int)this->visibleItems.size()) {
             std::string title = BuildGridTitleWithSize(this->visibleItems[this->shopGridIndex]);
-            this->gridTitleText->SetText(title);
+            this->gridTitleText->SetText(BuildSingleLineGridTitle(title));
             this->gridTitleText->SetVisible(true);
         } else {
             this->gridTitleText->SetVisible(false);
@@ -3110,6 +3142,7 @@ namespace inst::ui {
         this->shopSections.clear();
         this->availableUpdates.clear();
         this->saveSyncEntries.clear();
+        this->installedSnapshot = {};
         this->activeShopUrl.clear();
         this->searchQuery.clear();
         this->previewKey.clear();
@@ -3260,9 +3293,8 @@ namespace inst::ui {
         if (!motd.empty())
             mainApp->CreateShowDialog("inst.shop.motd_title"_lang, motd, {"common.ok"_lang}, true);
 
-        if (!inst::config::shopHideInstalledSection)
-            this->buildInstalledSection();
-        ShopDlcTrace("after buildInstalledSection sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
+        this->ensureInstalledSectionPlaceholder();
+        ShopDlcTrace("after ensureInstalledSectionPlaceholder sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
         this->buildLegacyOwnedSections();
         ShopDlcTrace("after buildLegacyOwnedSections sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
         this->cacheAvailableUpdates();
@@ -3468,12 +3500,7 @@ namespace inst::ui {
         if (DetectBottomHintTap(Pos, this->bottomHintTouch, 668, 52, bottomTapX)) {
             Down |= FindBottomHintButton(this->bottomHintSegments, bottomTapX);
         }
-        const u64 verticalNavDownMask = HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_StickLUp | HidNpadButton_StickLDown;
-        u64 clickDown = Down;
-        if (!this->shopGridMode) {
-            clickDown &= ~verticalNavDownMask;
-        }
-        inst::util::playNavigationClickIfNeeded(clickDown);
+        inst::util::playNavigationClickIfNeeded(Down);
         if (this->descriptionOverlayVisible) {
             if (Down & (HidNpadButton_B | HidNpadButton_ZL)) {
                 this->closeDescriptionOverlay();
@@ -3549,6 +3576,24 @@ namespace inst::ui {
                 }
                 if (!this->isInstalledSection() && !this->isSaveSyncSection() && !this->selectedItems.empty())
                     this->startInstall();
+            }
+            if (Down & HidNpadButton_Y) {
+                if (!this->isInstalledSection() && !this->isSaveSyncSection()) {
+                    if (this->selectedItems.size() == this->visibleItems.size()) {
+                        this->drawMenuItems(true);
+                    } else {
+                        for (std::size_t i = 0; i < this->visibleItems.size(); i++) {
+                            const auto& item = this->visibleItems[i];
+                            const bool alreadySelected = std::any_of(this->selectedItems.begin(), this->selectedItems.end(), [&](const auto& selected) {
+                                return selected.url == item.url;
+                            });
+                            if (alreadySelected)
+                                continue;
+                            this->selectTitle(static_cast<int>(i));
+                        }
+                        this->drawMenuItems(false);
+                    }
+                }
             }
             if (Down & HidNpadButton_X) {
                 this->startShop(true);
@@ -3904,13 +3949,6 @@ namespace inst::ui {
                 this->updateShopGrid();
             }
         } else {
-            const int currentSelectedIndex = this->menu->GetSelectedIndex();
-            if (currentSelectedIndex != this->listRenderedSelectedIndex && !this->menu->GetItems().empty()) {
-                this->listRenderedSelectedIndex = currentSelectedIndex;
-                if ((Down & verticalNavDownMask) == 0) {
-                    inst::util::playNavigationClick();
-                }
-            }
             this->updatePreview();
             this->updateShopGrid();
             this->updateListMarquee(false);

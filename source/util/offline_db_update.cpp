@@ -12,6 +12,7 @@
 #include <mutex>
 #include <algorithm>
 #include <sstream>
+#include <thread>
 #include <vector>
 #include <switch.h>
 #include "util/config.hpp"
@@ -50,6 +51,8 @@ namespace inst::offline::dbupdate
         std::atomic<std::uint64_t> g_offlineDbTraceCount{0};
         constexpr std::uint64_t kOfflineDbTraceMaxLines = 40000;
         constexpr const char* kOfflineDbTracePath = "sdmc:/switch/CyberFoil/offline_db_update.log";
+        constexpr std::uint64_t kParallelDownloadMinSize = 16ULL * 1024ULL * 1024ULL;
+        constexpr std::size_t kParallelDownloadParts = 4;
 
         void OfflineDbTrace(const char* fmt, ...)
         {
@@ -381,11 +384,18 @@ namespace inst::offline::dbupdate
             return false;
         }
 
-        bool ComputeFileSha256(const std::string& path, std::string& outHexHash, std::uint64_t& outSize)
+        bool ComputeFileSha256(const std::string& path, std::string& outHexHash, std::uint64_t& outSize,
+            const std::function<void(std::uint64_t read, std::uint64_t total)>& progress = {})
         {
             std::ifstream in(path, std::ios::binary);
             if (!in)
                 return false;
+
+            std::uint64_t totalSize = 0;
+            std::error_code sizeEc;
+            totalSize = std::filesystem::file_size(path, sizeEc);
+            if (sizeEc)
+                totalSize = 0;
 
             Sha256Context ctx;
             sha256ContextCreate(&ctx);
@@ -400,6 +410,8 @@ namespace inst::offline::dbupdate
                 if (got > 0) {
                     sha256ContextUpdate(&ctx, buffer.data(), static_cast<std::size_t>(got));
                     outSize += static_cast<std::uint64_t>(got);
+                    if (progress)
+                        progress(outSize, totalSize);
                 }
                 if (!in)
                     break;
@@ -425,6 +437,9 @@ namespace inst::offline::dbupdate
         {
             const double clampedStart = std::max(0.0, std::min(100.0, percentStart));
             const double clampedEnd = std::max(clampedStart, std::min(100.0, percentEnd));
+            const double span = clampedEnd - clampedStart;
+            const double downloadEnd = clampedStart + (span * 0.82);
+            const double verifyStart = downloadEnd;
             const std::uint64_t tickFreq = armGetSystemTickFreq();
             u64 lastReportTick = 0;
             double lastReportedPercent = -1.0;
@@ -452,7 +467,7 @@ namespace inst::offline::dbupdate
                 if (ratio > 1.0)
                     ratio = 1.0;
 
-                const double mappedPercent = clampedStart + ((clampedEnd - clampedStart) * ratio);
+                const double mappedPercent = clampedStart + ((downloadEnd - clampedStart) * ratio);
                 const u64 nowTick = armGetSystemTick();
                 const bool enoughTime = (lastReportTick == 0) || (tickFreq > 0 && (nowTick - lastReportTick) >= (tickFreq / 5));
                 const bool enoughProgress = (lastReportedPercent < 0.0) || (mappedPercent >= lastReportedPercent + 0.5);
@@ -512,29 +527,160 @@ namespace inst::offline::dbupdate
             LOG_DEBUG("Offline DB download start: %s\n", file.url.c_str());
             try {
                 RemoveIfExists(tempPath);
-                if (!inst::curl::downloadFileWithProgress(file.url, tempPath.c_str(), 0,
-                        [&](std::uint64_t downloaded, std::uint64_t total) {
-                            reportDownloadProgress(downloaded, total, false);
-                        })) {
+                auto singleStreamDownload = [&]() -> bool {
                     RemoveIfExists(tempPath);
-                    error = "Download failed: " + file.url;
-                    OfflineDbTrace("DownloadAndVerify fail: download error url='%s'", file.url.c_str());
-                    LOG_DEBUG("Offline DB download failed: %s\n", file.url.c_str());
+                    if (!inst::curl::downloadFileWithProgress(file.url, tempPath.c_str(), 0,
+                            [&](std::uint64_t downloaded, std::uint64_t total) {
+                                reportDownloadProgress(downloaded, total, false);
+                            })) {
+                        RemoveIfExists(tempPath);
+                        error = "Download failed: " + file.url;
+                        OfflineDbTrace("DownloadAndVerify fail: download error url='%s'", file.url.c_str());
+                        LOG_DEBUG("Offline DB download failed: %s\n", file.url.c_str());
+                        return false;
+                    }
+                    return true;
+                };
+                const bool useParallelDownload = file.size >= kParallelDownloadMinSize;
+                if (useParallelDownload) {
+                    struct PartState {
+                        std::uint64_t start = 0;
+                        std::uint64_t endInclusive = 0;
+                        std::atomic<std::uint64_t> downloaded{0};
+                        std::atomic<bool> done{false};
+                        bool success = false;
+                    };
+
+                    const std::size_t partCount = std::min<std::size_t>(kParallelDownloadParts,
+                        std::max<std::size_t>(2, static_cast<std::size_t>((file.size + kParallelDownloadMinSize - 1) / kParallelDownloadMinSize)));
+                    const std::uint64_t partSize = (file.size + partCount - 1) / partCount;
+                    std::vector<PartState> parts(partCount);
+                    std::vector<std::thread> workers;
+                    std::mutex failureMutex;
+                    bool failed = false;
+
+                    OfflineDbTrace("DownloadAndVerify using parallel download parts=%llu size=%llu",
+                        static_cast<unsigned long long>(partCount),
+                        static_cast<unsigned long long>(file.size));
+
+                    {
+                        std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
+                        if (!out) {
+                            error = "Failed to prepare download file.";
+                            OfflineDbTrace("DownloadAndVerify fail: failed to create temp output '%s'", tempPath.c_str());
+                            return false;
+                        }
+                    }
+                    std::error_code resizeEc;
+                    std::filesystem::resize_file(tempPath, file.size, resizeEc);
+                    if (resizeEc) {
+                        RemoveIfExists(tempPath);
+                        error = "Failed to prepare download file.";
+                        OfflineDbTrace("DownloadAndVerify fail: resize_file failed temp='%s' ec=%d", tempPath.c_str(), resizeEc.value());
+                        return false;
+                    }
+
+                    for (std::size_t i = 0; i < partCount; i++) {
+                        const std::uint64_t start = static_cast<std::uint64_t>(i) * partSize;
+                        const std::uint64_t endInclusive = std::min<std::uint64_t>(file.size - 1, start + partSize - 1);
+                        parts[i].start = start;
+                        parts[i].endInclusive = endInclusive;
+
+                        workers.emplace_back([&, i]() {
+                            const bool ok = inst::curl::downloadFileRangeToOffsetWithProgress(file.url, tempPath.c_str(),
+                                parts[i].start, parts[i].start, parts[i].endInclusive, 0,
+                                [&](std::uint64_t downloaded, std::uint64_t /*total*/) {
+                                    parts[i].downloaded.store(downloaded, std::memory_order_relaxed);
+                                });
+                            parts[i].success = ok;
+                            if (!ok) {
+                                std::lock_guard<std::mutex> guard(failureMutex);
+                                failed = true;
+                            } else {
+                                parts[i].downloaded.store((parts[i].endInclusive - parts[i].start) + 1, std::memory_order_relaxed);
+                            }
+                            parts[i].done.store(true, std::memory_order_release);
+                        });
+                    }
+
+                    while (true) {
+                        std::uint64_t totalDownloaded = 0;
+                        bool allDone = true;
+                        for (const auto& part : parts) {
+                            totalDownloaded += part.downloaded.load(std::memory_order_relaxed);
+                            if (!part.done.load(std::memory_order_acquire))
+                                allDone = false;
+                        }
+
+                        reportDownloadProgress(totalDownloaded, file.size, allDone);
+                        if (allDone)
+                            break;
+
+                        svcSleepThread(100'000'000ULL);
+                    }
+
+                    for (auto& worker : workers) {
+                        if (worker.joinable())
+                            worker.join();
+                    }
+
+                    if (failed) {
+                        RemoveIfExists(tempPath);
+                        OfflineDbTrace("DownloadAndVerify parallel path failed, falling back to single-stream url='%s'", file.url.c_str());
+                        LOG_DEBUG("Offline DB parallel download failed, retrying single-stream: %s\n", file.url.c_str());
+                        if (!singleStreamDownload())
+                            return false;
+                    }
+                } else if (!singleStreamDownload()) {
                     return false;
                 }
 
                 reportDownloadProgress(lastTotal ? lastTotal : file.size, lastTotal ? lastTotal : file.size, true);
+                if (progress)
+                    progress(stageLabel + " (verifying...)", verifyStart);
 
                 OfflineDbTrace("DownloadAndVerify download complete, starting hash temp='%s'", tempPath.c_str());
                 std::uint64_t actualSize = 0;
                 std::string actualSha;
-                if (!ComputeFileSha256(tempPath, actualSha, actualSize)) {
+                u64 lastVerifyReportTick = 0;
+                double lastVerifyPercent = -1.0;
+                if (!ComputeFileSha256(tempPath, actualSha, actualSize,
+                        [&](std::uint64_t read, std::uint64_t total) {
+                            if (!progress)
+                                return;
+
+                            std::uint64_t effectiveTotal = total == 0 ? file.size : total;
+                            if (effectiveTotal == 0)
+                                effectiveTotal = 1;
+                            const std::uint64_t boundedRead = std::min(read, effectiveTotal);
+                            double ratio = static_cast<double>(boundedRead) / static_cast<double>(effectiveTotal);
+                            if (ratio < 0.0)
+                                ratio = 0.0;
+                            if (ratio > 1.0)
+                                ratio = 1.0;
+
+                            const double mappedPercent = verifyStart + ((clampedEnd - verifyStart) * ratio);
+                            const u64 nowTick = armGetSystemTick();
+                            const bool enoughTime = (lastVerifyReportTick == 0) || (tickFreq > 0 && (nowTick - lastVerifyReportTick) >= (tickFreq / 5));
+                            const bool enoughProgress = (lastVerifyPercent < 0.0) || (mappedPercent >= lastVerifyPercent + 0.5);
+                            if (!enoughTime && !enoughProgress)
+                                return;
+
+                            std::ostringstream status;
+                            status << stageLabel << " (verifying " << static_cast<int>(mappedPercent + 0.5) << "%)";
+                            progress(status.str(), mappedPercent);
+                            lastVerifyReportTick = nowTick;
+                            lastVerifyPercent = mappedPercent;
+                        })) {
                     RemoveIfExists(tempPath);
                     error = "Failed to verify downloaded file hash.";
                     OfflineDbTrace("DownloadAndVerify fail: failed to hash temp='%s'", tempPath.c_str());
                     LOG_DEBUG("Offline DB hash verify failed to read temp file: %s\n", tempPath.c_str());
                     return false;
                 }
+
+                if (progress)
+                    progress(stageLabel + " (verified)", clampedEnd);
 
                 if (actualSize != file.size) {
                     RemoveIfExists(tempPath);
@@ -693,7 +839,7 @@ namespace inst::offline::dbupdate
             return result;
         }
 
-        ReportProgress(progress, "Downloading Offline DB manifest...", 5.0);
+        ReportProgress(progress, "Downloading offline DB manifest", 5.0);
         OfflineDbTrace("ApplyUpdate progress: download manifest");
 
         ManifestData manifest;
@@ -738,20 +884,20 @@ namespace inst::offline::dbupdate
 
         OfflineDbTrace("ApplyUpdate progress: downloading titles.pack");
         if (!DownloadAndVerify(manifest.titlesPack, titlesTemp, result.error, progress,
-                "Downloading titles.pack...", 20.0, 45.0)) {
+                "Downloading titles.pack", 20.0, 45.0)) {
             OfflineDbTrace("ApplyUpdate fail: titles.pack %s", result.error.c_str());
             return result;
         }
 
         OfflineDbTrace("ApplyUpdate progress: downloading icons.pack");
         if (!DownloadAndVerify(manifest.iconsPack, iconsTemp, result.error, progress,
-                "Downloading icons.pack...", 45.0, 70.0)) {
+                "Downloading icons.pack", 45.0, 70.0)) {
             RemoveIfExists(titlesTemp);
             OfflineDbTrace("ApplyUpdate fail: icons.pack %s", result.error.c_str());
             return result;
         }
 
-        ReportProgress(progress, "Writing manifest...", 70.0);
+        ReportProgress(progress, "Writing manifest", 70.0);
         OfflineDbTrace("ApplyUpdate progress: writing local manifest");
         {
             std::ofstream out(manifestTemp, std::ios::binary | std::ios::trunc);
@@ -775,7 +921,7 @@ namespace inst::offline::dbupdate
             }
         }
 
-        ReportProgress(progress, "Installing offline DB...", 85.0);
+        ReportProgress(progress, "Installing offline DB", 85.0);
         OfflineDbTrace("ApplyUpdate progress: installing files");
 
         ReplaceState titlesState{
@@ -829,7 +975,7 @@ namespace inst::offline::dbupdate
         LOG_DEBUG("Offline DB updated to %s\n", manifest.version.c_str());
         OfflineDbTrace("ApplyUpdate success version='%s'", manifest.version.c_str());
 
-        ReportProgress(progress, "Offline DB update complete.", 100.0);
+        ReportProgress(progress, "Offline DB update complete", 100.0);
         result.success = true;
         result.updated = true;
         result.version = manifest.version;
