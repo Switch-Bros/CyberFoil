@@ -10,6 +10,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -51,6 +52,15 @@ namespace inst::ui {
             std::vector<shopInstStuff::ShopItem> visibleItems;
             std::vector<shopInstStuff::ShopItem> availableUpdates;
             std::vector<inst::save_sync::SaveSyncEntry> saveSyncEntries;
+            struct InstalledSnapshot {
+                bool ready = false;
+                bool installedSectionBuilt = false;
+                std::unordered_map<std::uint64_t, bool> baseInstalled;
+                std::unordered_map<std::uint64_t, std::uint32_t> installedUpdateVersion;
+                std::unordered_set<std::uint64_t> installedDlcIds;
+                std::vector<std::uint64_t> installedBaseIds;
+            };
+            InstalledSnapshot installedSnapshot;
             bool nativeUpdatesSectionPresent = false;
             bool nativeDlcSectionPresent = false;
             bool saveSyncEnabled = false;
@@ -199,5 +209,8 @@ namespace inst::ui {
             void queueIconDownload(const shopInstStuff::ShopItem& item, const std::string& filePath);
             void refreshImageLoadingText(bool showCompleted = false);
             void iconDownloadThreadMain();
+            bool buildInstalledSnapshot();
+            void ensureInstalledSectionPlaceholder();
+            bool ensureInstalledSectionBuilt();
     };
 }

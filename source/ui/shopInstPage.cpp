@@ -1597,15 +1597,17 @@ namespace inst::ui {
     }
 
     void shopInstPage::buildInstalledSection() {
-        std::vector<shopInstStuff::ShopItem> installedItems;
+        (void)this->ensureInstalledSectionBuilt();
+    }
+
+    bool shopInstPage::buildInstalledSnapshot() {
+        if (this->installedSnapshot.ready)
+            return true;
+
+        this->installedSnapshot = {};
         Result rc = nsInitialize();
         if (R_FAILED(rc))
-            return;
-        rc = ncmInitialize();
-        if (R_FAILED(rc)) {
-            nsExit();
-            return;
-        }
+            return false;
 
         const s32 chunk = 64;
         s32 offset = 0;
@@ -1618,56 +1620,117 @@ namespace inst::ui {
 
             for (s32 i = 0; i < outCount; i++) {
                 const u64 baseId = records[i].application_id;
-                if (!IsBaseTitleCurrentlyInstalled(baseId))
+                const bool installed = IsBaseTitleCurrentlyInstalled(baseId);
+                this->installedSnapshot.baseInstalled[baseId] = installed;
+                if (!installed)
                     continue;
-                shopInstStuff::ShopItem baseItem;
-                baseItem.name = tin::util::GetTitleName(baseId, NcmContentMetaType_Application);
-                baseItem.url = "";
-                baseItem.size = 0;
-                baseItem.titleId = baseId;
-                baseItem.hasTitleId = true;
-                baseItem.appType = NcmContentMetaType_Application;
-                installedItems.push_back(baseItem);
+
+                this->installedSnapshot.installedBaseIds.push_back(baseId);
 
                 s32 metaCount = 0;
                 if (R_SUCCEEDED(nsCountApplicationContentMeta(baseId, &metaCount)) && metaCount > 0) {
-                    std::vector<NsApplicationContentMetaStatus> list(metaCount);
+                    std::vector<NsApplicationContentMetaStatus> list(static_cast<std::size_t>(metaCount));
                     s32 metaOut = 0;
                     if (R_SUCCEEDED(nsListApplicationContentMetaStatus(baseId, 0, list.data(), metaCount, &metaOut)) && metaOut > 0) {
                         for (s32 j = 0; j < metaOut; j++) {
-                            if (list[j].meta_type != NcmContentMetaType_Patch && list[j].meta_type != NcmContentMetaType_AddOnContent)
-                                continue;
-                            shopInstStuff::ShopItem item;
-                            item.titleId = list[j].application_id;
-                            item.hasTitleId = true;
-                            item.appVersion = list[j].version;
-                            item.hasAppVersion = true;
-                            item.appType = list[j].meta_type;
-                            item.name = tin::util::GetTitleName(item.titleId, static_cast<NcmContentMetaType>(item.appType));
-                            item.url = "";
-                            item.size = 0;
-                            installedItems.push_back(item);
+                            if (list[j].meta_type == NcmContentMetaType_Patch) {
+                                auto& version = this->installedSnapshot.installedUpdateVersion[baseId];
+                                if (list[j].version > version)
+                                    version = list[j].version;
+                            } else if (list[j].meta_type == NcmContentMetaType_AddOnContent) {
+                                this->installedSnapshot.installedDlcIds.insert(list[j].application_id);
+                            }
                         }
                     }
                 }
             }
+
             offset += outCount;
         }
 
         nsExit();
+        this->installedSnapshot.ready = true;
+        return true;
+    }
 
-        if (installedItems.empty())
+    void shopInstPage::ensureInstalledSectionPlaceholder() {
+        if (inst::config::shopHideInstalledSection)
             return;
+
+        auto it = std::find_if(this->shopSections.begin(), this->shopSections.end(), [](const auto& section) {
+            return section.id == "installed";
+        });
+        if (it != this->shopSections.end())
+            return;
+
+        shopInstStuff::ShopSection installedSection;
+        installedSection.id = "installed";
+        installedSection.title = "Installed";
+        this->shopSections.insert(this->shopSections.begin(), std::move(installedSection));
+    }
+
+    bool shopInstPage::ensureInstalledSectionBuilt() {
+        this->ensureInstalledSectionPlaceholder();
+        if (this->installedSnapshot.installedSectionBuilt)
+            return true;
+        if (!this->buildInstalledSnapshot())
+            return false;
+
+        auto sectionIt = std::find_if(this->shopSections.begin(), this->shopSections.end(), [](const auto& section) {
+            return section.id == "installed";
+        });
+        if (sectionIt == this->shopSections.end())
+            return false;
+
+        Result rc = nsInitialize();
+        if (R_FAILED(rc))
+            return false;
+
+        std::vector<shopInstStuff::ShopItem> installedItems;
+        installedItems.reserve(this->installedSnapshot.installedBaseIds.size() * 2);
+
+        for (const auto baseId : this->installedSnapshot.installedBaseIds) {
+            shopInstStuff::ShopItem baseItem;
+            baseItem.name = tin::util::GetTitleName(baseId, NcmContentMetaType_Application);
+            baseItem.url = "";
+            baseItem.size = 0;
+            baseItem.titleId = baseId;
+            baseItem.hasTitleId = true;
+            baseItem.appType = NcmContentMetaType_Application;
+            installedItems.push_back(baseItem);
+
+            s32 metaCount = 0;
+            if (R_SUCCEEDED(nsCountApplicationContentMeta(baseId, &metaCount)) && metaCount > 0) {
+                std::vector<NsApplicationContentMetaStatus> list(static_cast<std::size_t>(metaCount));
+                s32 metaOut = 0;
+                if (R_SUCCEEDED(nsListApplicationContentMetaStatus(baseId, 0, list.data(), metaCount, &metaOut)) && metaOut > 0) {
+                    for (s32 j = 0; j < metaOut; j++) {
+                        if (list[j].meta_type != NcmContentMetaType_Patch && list[j].meta_type != NcmContentMetaType_AddOnContent)
+                            continue;
+                        shopInstStuff::ShopItem item;
+                        item.titleId = list[j].application_id;
+                        item.hasTitleId = true;
+                        item.appVersion = list[j].version;
+                        item.hasAppVersion = true;
+                        item.appType = list[j].meta_type;
+                        item.name = tin::util::GetTitleName(item.titleId, static_cast<NcmContentMetaType>(item.appType));
+                        item.url = "";
+                        item.size = 0;
+                        installedItems.push_back(item);
+                    }
+                }
+            }
+        }
+
+        nsExit();
 
         std::sort(installedItems.begin(), installedItems.end(), [](const auto& a, const auto& b) {
             return inst::util::ignoreCaseCompare(a.name, b.name);
         });
 
-        shopInstStuff::ShopSection installedSection;
-        installedSection.id = "installed";
-        installedSection.title = "Installed";
-        installedSection.items = std::move(installedItems);
-        this->shopSections.insert(this->shopSections.begin(), std::move(installedSection));
+        sectionIt->items = std::move(installedItems);
+        this->installedSnapshot.installedSectionBuilt = true;
+        return true;
     }
 
     void shopInstPage::buildSaveSyncSection(const std::string& shopUrl) {
@@ -2110,6 +2173,8 @@ namespace inst::ui {
     void shopInstPage::buildLegacyOwnedSections() {
         if (this->shopSections.empty())
             return;
+        if (!this->buildInstalledSnapshot())
+            return;
 
         auto normalizeSectionId = [](std::string value) {
             std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -2138,20 +2203,11 @@ namespace inst::ui {
         if (!hasAllSection || (hasUpdatesSection && hasDlcSection))
             return;
 
-        Result rc = nsInitialize();
-        if (R_FAILED(rc))
-            return;
-
-        std::unordered_map<std::uint64_t, bool> baseInstalled;
         auto isBaseInstalled = [&](std::uint64_t baseTitleId) {
             if (baseTitleId == 0)
                 return false;
-            const auto it = baseInstalled.find(baseTitleId);
-            if (it != baseInstalled.end())
-                return it->second;
-            const bool installed = IsBaseTitleCurrentlyInstalled(baseTitleId);
-            baseInstalled[baseTitleId] = installed;
-            return installed;
+            const auto it = this->installedSnapshot.baseInstalled.find(baseTitleId);
+            return (it != this->installedSnapshot.baseInstalled.end()) && it->second;
         };
 
         std::vector<shopInstStuff::ShopItem> updates;
@@ -2183,7 +2239,7 @@ namespace inst::ui {
                 }
 
                 if (!hasDlcSection && IsDlcItem(item)) {
-                    if (item.hasTitleId && tin::util::IsTitleInstalled(item.titleId))
+                    if (item.hasTitleId && this->installedSnapshot.installedDlcIds.count(item.titleId))
                         continue;
                     const std::string key = BuildItemIdentityKey(item);
                     if (!key.empty() && !seenDlcKeys.insert(key).second)
@@ -2192,8 +2248,6 @@ namespace inst::ui {
                 }
             }
         }
-
-        nsExit();
 
         auto sortByName = [](std::vector<shopInstStuff::ShopItem>& items) {
             std::sort(items.begin(), items.end(), [](const auto& a, const auto& b) {
@@ -2241,19 +2295,14 @@ namespace inst::ui {
     void shopInstPage::filterOwnedSections() {
         if (this->shopSections.empty())
             return;
-
-        Result rc = nsInitialize();
-        if (R_FAILED(rc)) {
-            ShopDlcTrace("filterOwnedSections nsInitialize failed rc=0x%08X", rc);
+        if (!this->buildInstalledSnapshot()) {
+            ShopDlcTrace("filterOwnedSections buildInstalledSnapshot failed");
             return;
         }
-        const bool ncmReady = R_SUCCEEDED(ncmInitialize());
-        ShopDlcTrace("filterOwnedSections begin sections=%llu ncmReady=%d", static_cast<unsigned long long>(this->shopSections.size()), ncmReady ? 1 : 0);
-
-        std::unordered_map<std::uint64_t, std::uint32_t> installedUpdateVersion;
-        std::unordered_map<std::uint64_t, bool> baseInstalled;
-        std::unordered_map<std::uint64_t, bool> metaLoaded;
-        std::unordered_map<std::uint64_t, bool> dlcInstalledById;
+        ShopDlcTrace("filterOwnedSections begin sections=%llu snapshotBases=%llu snapshotDlcs=%llu",
+            static_cast<unsigned long long>(this->shopSections.size()),
+            static_cast<unsigned long long>(this->installedSnapshot.baseInstalled.size()),
+            static_cast<unsigned long long>(this->installedSnapshot.installedDlcIds.size()));
         const bool enforceBaseInstallForDlcSection = true;
         ShopDlcTrace("filter mode nativeDlcSectionPresent=%d enforceBaseInstallForDlcSection=%d",
             this->nativeDlcSectionPresent ? 1 : 0,
@@ -2279,111 +2328,23 @@ namespace inst::ui {
             return false;
         };
 
-        auto loadInstalledMeta = [&](std::uint64_t baseTitleId) {
-            const auto loadedIt = metaLoaded.find(baseTitleId);
-            if (loadedIt != metaLoaded.end())
-                return;
-
-            metaLoaded[baseTitleId] = true;
-            s32 metaCount = 0;
-            if (R_FAILED(nsCountApplicationContentMeta(baseTitleId, &metaCount)) || metaCount <= 0)
-                return;
-
-            std::vector<NsApplicationContentMetaStatus> list(static_cast<std::size_t>(metaCount));
-            s32 metaOut = 0;
-            if (R_FAILED(nsListApplicationContentMetaStatus(baseTitleId, 0, list.data(), metaCount, &metaOut)) || metaOut <= 0)
-                return;
-
-            for (s32 i = 0; i < metaOut; i++) {
-                if (list[i].meta_type == NcmContentMetaType_Patch) {
-                    auto& version = installedUpdateVersion[baseTitleId];
-                    if (list[i].version > version)
-                        version = list[i].version;
-                }
-            }
-        };
-
         auto isDlcInstalledByTitleId = [&](std::uint64_t dlcTitleId) {
-            if (!ncmReady || dlcTitleId == 0)
+            if (dlcTitleId == 0)
                 return false;
-            auto cached = dlcInstalledById.find(dlcTitleId);
-            if (cached != dlcInstalledById.end())
-                return cached->second;
-
-            bool installed = false;
-            const NcmStorageId storages[] = {NcmStorageId_BuiltInUser, NcmStorageId_SdCard};
-            for (auto storage : storages) {
-                NcmContentMetaDatabase db;
-                if (R_FAILED(ncmOpenContentMetaDatabase(&db, storage)))
-                    continue;
-                NcmContentMetaKey key = {};
-                if (R_SUCCEEDED(ncmContentMetaDatabaseGetLatestContentMetaKey(&db, &key, dlcTitleId))) {
-                    if (key.type == NcmContentMetaType_AddOnContent && key.id == dlcTitleId) {
-                        installed = true;
-                        ncmContentMetaDatabaseClose(&db);
-                        break;
-                    }
-                }
-                ncmContentMetaDatabaseClose(&db);
-            }
-
-            dlcInstalledById[dlcTitleId] = installed;
-            return installed;
+            return this->installedSnapshot.installedDlcIds.count(dlcTitleId) > 0;
         };
-
-        const s32 chunk = 64;
-        s32 offset = 0;
-        while (true) {
-            NsApplicationRecord records[chunk];
-            s32 outCount = 0;
-            if (R_FAILED(nsListApplicationRecord(records, chunk, offset, &outCount)) || outCount <= 0)
-                break;
-            for (s32 i = 0; i < outCount; i++) {
-                const auto titleId = records[i].application_id;
-                const bool installed = IsBaseTitleCurrentlyInstalled(titleId);
-                baseInstalled[titleId] = installed;
-                if (installed)
-                    loadInstalledMeta(titleId);
-            }
-            offset += outCount;
-        }
-        std::size_t installedBaseCount = 0;
-        for (const auto& entry : baseInstalled) {
-            if (entry.second)
-                installedBaseCount++;
-        }
-        ShopDlcTrace("filter base scan done knownBases=%llu installedBases=%llu", static_cast<unsigned long long>(baseInstalled.size()), static_cast<unsigned long long>(installedBaseCount));
 
         auto isBaseInstalled = [&](const shopInstStuff::ShopItem& item, std::uint32_t& outVersion) {
             std::uint64_t baseTitleId = 0;
             if (!DeriveBaseTitleId(item, baseTitleId))
                 return false;
-            auto baseIt = baseInstalled.find(baseTitleId);
-            if (baseIt != baseInstalled.end()) {
-                if (baseIt->second) {
-                    loadInstalledMeta(baseTitleId);
-                    auto verIt = installedUpdateVersion.find(baseTitleId);
-                    if (verIt != installedUpdateVersion.end()) {
-                        outVersion = verIt->second;
-                    } else {
-                        tin::util::GetInstalledUpdateVersion(baseTitleId, outVersion);
-                        if (outVersion == 0)
-                            TryGetInstalledUpdateVersionNcm(baseTitleId, outVersion);
-                        installedUpdateVersion[baseTitleId] = outVersion;
-                    }
-                }
-                return baseIt->second;
-            }
-            bool installed = IsBaseTitleCurrentlyInstalled(baseTitleId);
-            if (installed) {
-                loadInstalledMeta(baseTitleId);
-                tin::util::GetInstalledUpdateVersion(baseTitleId, outVersion);
-                if (outVersion == 0)
-                    TryGetInstalledUpdateVersionNcm(baseTitleId, outVersion);
-            }
-            baseInstalled[baseTitleId] = installed;
-            installedUpdateVersion[baseTitleId] = outVersion;
-            return installed;
+            const auto baseIt = this->installedSnapshot.baseInstalled.find(baseTitleId);
+            if (baseIt == this->installedSnapshot.baseInstalled.end() || !baseIt->second)
+                return false;
+
+            const auto verIt = this->installedSnapshot.installedUpdateVersion.find(baseTitleId);
+            outVersion = (verIt != this->installedSnapshot.installedUpdateVersion.end()) ? verIt->second : 0;
+            return true;
         };
 
         auto isDlcInstalled = [&](const shopInstStuff::ShopItem& item) {
@@ -2522,9 +2483,6 @@ namespace inst::ui {
             appendTypeLabels(section);
         }
 
-        if (ncmReady)
-            ncmExit();
-        nsExit();
     }
 
     void shopInstPage::updatePreview() {
@@ -2699,6 +2657,8 @@ namespace inst::ui {
     void shopInstPage::drawMenuItems(bool clearItems) {
         if (clearItems) this->selectedItems.clear();
         this->resetIconDownloadState();
+        if (this->isInstalledSection())
+            this->ensureInstalledSectionBuilt();
         this->emptySectionText->SetVisible(false);
         this->listMarqueeMaskRect->SetVisible(false);
         this->listMarqueeTintRect->SetVisible(false);
@@ -3182,6 +3142,7 @@ namespace inst::ui {
         this->shopSections.clear();
         this->availableUpdates.clear();
         this->saveSyncEntries.clear();
+        this->installedSnapshot = {};
         this->activeShopUrl.clear();
         this->searchQuery.clear();
         this->previewKey.clear();
@@ -3332,9 +3293,8 @@ namespace inst::ui {
         if (!motd.empty())
             mainApp->CreateShowDialog("inst.shop.motd_title"_lang, motd, {"common.ok"_lang}, true);
 
-        if (!inst::config::shopHideInstalledSection)
-            this->buildInstalledSection();
-        ShopDlcTrace("after buildInstalledSection sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
+        this->ensureInstalledSectionPlaceholder();
+        ShopDlcTrace("after ensureInstalledSectionPlaceholder sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
         this->buildLegacyOwnedSections();
         ShopDlcTrace("after buildLegacyOwnedSections sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
         this->cacheAvailableUpdates();
