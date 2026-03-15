@@ -1312,7 +1312,7 @@ namespace shopInstStuff {
                     return 0;
                 }
 
-                const size_t fetch_size = std::max(req_size, kReadAheadSize);
+                const size_t fetch_size = std::min(req_size, kReadAheadSize);
                 m_cache.resize(fetch_size);
                 m_download.BufferDataRange(m_cache.data(), req_off, fetch_size, nullptr);
                 m_cache_start = req_off;
