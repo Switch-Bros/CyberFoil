@@ -70,6 +70,39 @@ namespace inst::ui {
             return labels;
         }
 
+        bool ShopInputHasExplicitPort(const std::string& value)
+        {
+            std::string input = TrimString(value);
+            if (input.rfind("https://", 0) == 0) {
+                input = input.substr(8);
+            } else if (input.rfind("http://", 0) == 0) {
+                input = input.substr(7);
+            }
+
+            const std::size_t authorityEnd = input.find_first_of("/?#");
+            if (authorityEnd != std::string::npos)
+                input = input.substr(0, authorityEnd);
+
+            const std::size_t atPos = input.rfind('@');
+            if (atPos != std::string::npos)
+                input = input.substr(atPos + 1);
+
+            if (input.empty())
+                return false;
+
+            if (input.front() == '[') {
+                const std::size_t closingBracket = input.find(']');
+                return closingBracket != std::string::npos &&
+                       closingBracket + 1 < input.size() &&
+                       input[closingBracket + 1] == ':';
+            }
+
+            const std::size_t colonPos = input.rfind(':');
+            return colonPos != std::string::npos &&
+                   input.find(':') == colonPos &&
+                   colonPos + 1 < input.size();
+        }
+
         bool PromptForShopDetails(inst::config::ShopProfile& shop)
         {
             std::string shopTitle = TrimString(inst::util::softwareKeyboard("Enter shop title (required)", shop.title, 80));
@@ -107,9 +140,11 @@ namespace inst::ui {
             shopPath = inst::config::NormalizeShopPath(shopPath);
 
             const int defaultPort = inst::config::DefaultPortForProtocol(shop.protocol);
-            int currentPort = parsedPort;
+            int currentPort = shop.port;
             if (currentPort <= 0 || currentPort > 65535)
                 currentPort = defaultPort;
+            if (ShopInputHasExplicitPort(endpointInput))
+                currentPort = parsedPort;
             int shopPort = currentPort;
 
             std::string defaultPortLabel = "Use default (" + std::to_string(defaultPort) + ")";
