@@ -341,6 +341,41 @@ namespace {
         return out;
     }
 
+    bool TryParseDateSortKey(const std::string& text, std::uint64_t& out)
+    {
+        std::string digits;
+        digits.reserve(14);
+        for (unsigned char c : text) {
+            if (std::isdigit(c))
+                digits.push_back(static_cast<char>(c));
+        }
+
+        if (digits.size() < 8)
+            return false;
+
+        const unsigned year = static_cast<unsigned>(std::strtoul(digits.substr(0, 4).c_str(), nullptr, 10));
+        if (year < 1900 || year > 9999)
+            return false;
+
+        std::string normalized = digits.substr(0, std::min<std::size_t>(digits.size(), 14));
+        while (normalized.size() < 14)
+            normalized.push_back('0');
+
+        out = static_cast<std::uint64_t>(std::strtoull(normalized.c_str(), nullptr, 10));
+        return true;
+    }
+
+    bool TryGetItemSortDateKey(const shopInstStuff::ShopItem& item, std::uint64_t& out)
+    {
+        if (item.saveCreatedTs > 0) {
+            out = item.saveCreatedTs;
+            return true;
+        }
+        if (!item.saveCreatedAt.empty())
+            return TryParseDateSortKey(item.saveCreatedAt, out);
+        return false;
+    }
+
     std::vector<std::size_t> BuildUtf8Boundaries(const std::string& text)
     {
         std::vector<std::size_t> boundaries;
@@ -1304,6 +1339,11 @@ namespace inst::ui {
             if (!rightInfo.empty())
                 rightInfo += " | ";
             rightInfo += "Sort: " + this->getAllSortModeLabel();
+        } else if (this->browseSortMode != BrowseSortMode::Default) {
+            if (!rightInfo.empty())
+                rightInfo += " | ";
+            rightInfo += "Sort: ";
+            rightInfo += this->getBrowseSortLabel();
         }
 
         if (!rightInfo.empty()) {
@@ -1334,6 +1374,120 @@ namespace inst::ui {
         this->loadingProgressText->SetText("inst.shop.loading"_lang + " " + std::to_string(percent) + "%");
         CenterTextX(this->loadingProgressText);
         this->loadingBarFill->SetWidth((500 * percent) / 100);
+    }
+
+    const char* shopInstPage::getBrowseSortLabel() const
+    {
+        switch (this->browseSortMode) {
+            case BrowseSortMode::DateDesc:
+                return "Date";
+            case BrowseSortMode::NameAsc:
+                return "Name";
+            default:
+                return "Shop Order";
+        }
+    }
+
+    void shopInstPage::applyBrowseSort()
+    {
+        switch (this->browseSortMode) {
+            case BrowseSortMode::NameAsc:
+                std::stable_sort(this->visibleItems.begin(), this->visibleItems.end(), [](const auto& a, const auto& b) {
+                    return inst::util::ignoreCaseCompare(a.name, b.name);
+                });
+                break;
+            case BrowseSortMode::DateDesc:
+                std::stable_sort(this->visibleItems.begin(), this->visibleItems.end(), [](const auto& a, const auto& b) {
+                    std::uint64_t aKey = 0;
+                    std::uint64_t bKey = 0;
+                    const bool aHasDate = TryGetItemSortDateKey(a, aKey);
+                    const bool bHasDate = TryGetItemSortDateKey(b, bKey);
+                    if (aHasDate != bHasDate)
+                        return aHasDate && !bHasDate;
+                    if (aHasDate && bHasDate) {
+                        if (aKey != bKey)
+                            return aKey > bKey;
+                        return inst::util::ignoreCaseCompare(a.name, b.name);
+                    }
+                    return false;
+                });
+                break;
+            default:
+                break;
+        }
+    }
+
+    void shopInstPage::openSearchSortDialog()
+    {
+        std::string details = "Current sort: ";
+        const bool allSection = this->isAllSection();
+        details += allSection ? this->getAllSortModeLabel() : this->getBrowseSortLabel();
+        if (!this->searchQuery.empty()) {
+            details += "\nSearch: ";
+            details += inst::util::shortenString(this->searchQuery, 48, true);
+        }
+
+        std::vector<std::string> options = {
+            "Search",
+            "Sort by Date",
+            "Sort by Name"
+        };
+        if (!allSection)
+            options.push_back("Use Shop Order");
+        if (!this->searchQuery.empty())
+            options.push_back("Clear Search");
+        options.push_back("common.cancel"_lang);
+
+        const int choice = mainApp->CreateShowDialog("Browse Shop", details, options, false);
+        if (choice < 0)
+            return;
+
+        bool needsRedraw = false;
+        if (choice == 0) {
+            std::string query = inst::util::softwareKeyboard("inst.shop.search_hint"_lang, this->searchQuery, 60);
+            if (query != this->searchQuery) {
+                this->searchQuery = query;
+                needsRedraw = true;
+            }
+        } else if (choice == 1) {
+            if (allSection) {
+                if (this->allSortMode != 3) {
+                    this->allSortMode = 3;
+                    this->applyAllSectionSort();
+                    needsRedraw = true;
+                }
+            } else if (this->browseSortMode != BrowseSortMode::DateDesc) {
+                this->browseSortMode = BrowseSortMode::DateDesc;
+                needsRedraw = true;
+            }
+        } else if (choice == 2) {
+            if (allSection) {
+                if (this->allSortMode != 0) {
+                    this->allSortMode = 0;
+                    this->applyAllSectionSort();
+                    needsRedraw = true;
+                }
+            } else if (this->browseSortMode != BrowseSortMode::NameAsc) {
+                this->browseSortMode = BrowseSortMode::NameAsc;
+                needsRedraw = true;
+            }
+        } else if (!allSection && choice == 3) {
+            if (this->browseSortMode != BrowseSortMode::Default) {
+                this->browseSortMode = BrowseSortMode::Default;
+                needsRedraw = true;
+            }
+        } else if (!this->searchQuery.empty() && choice == (allSection ? 3 : 4)) {
+            this->searchQuery.clear();
+            needsRedraw = true;
+        }
+
+        if (!needsRedraw)
+            return;
+
+        this->shopGridPage = -1;
+        this->gridPage = -1;
+        this->updateSectionText();
+        this->drawMenuItems(false);
     }
 
     void shopInstPage::getListTextBounds(int& textX, int& textWidth) const
@@ -1661,7 +1815,7 @@ namespace inst::ui {
                 this->setButtonsText(" Download    / Select Version     Back");
         }
         else if (this->isSaveSyncSection())
-            this->setButtonsText(" Manage Save     Refresh    / Section     Cancel");
+            this->setButtonsText(" Manage Save     Refresh    / Section     Search/Sort     Cancel");
         else if (this->isInstalledSection())
             this->setButtonsText("inst.shop.buttons_installed"_lang);
         else {
@@ -2731,7 +2885,20 @@ namespace inst::ui {
     }
 
     void shopInstPage::drawMenuItems(bool clearItems) {
-        if (clearItems) this->selectedItems.clear();
+        std::string previousSelectionKey;
+        int previousSelectionIndex = 0;
+        if (!this->visibleItems.empty()) {
+            int currentIndex = this->shopGridMode ? this->shopGridIndex : this->menu->GetSelectedIndex();
+            if (this->isInstalledSection() && this->shopGridMode)
+                currentIndex = this->gridSelectedIndex;
+            if (currentIndex >= 0 && currentIndex < static_cast<int>(this->visibleItems.size())) {
+                previousSelectionKey = BuildItemIdentityKey(this->visibleItems[static_cast<std::size_t>(currentIndex)]);
+                previousSelectionIndex = currentIndex;
+            }
+        }
+
+        if (clearItems)
+            this->selectedItems.clear();
         this->resetIconDownloadState();
         if (this->isInstalledSection())
             this->ensureInstalledSectionBuilt();
@@ -2764,6 +2931,9 @@ namespace inst::ui {
             }
             this->visibleItems = std::move(baseOnlyItems);
         }
+
+        if (!this->isAllSection())
+            this->applyBrowseSort();
 
         if (!this->shopSections.empty() && this->selectedSectionIndex >= 0 && this->selectedSectionIndex < static_cast<int>(this->shopSections.size()) && this->visibleItems.empty()) {
             const auto &section = this->shopSections[this->selectedSectionIndex];
@@ -2847,12 +3017,28 @@ namespace inst::ui {
             this->menu->AddItem(entry);
         }
 
-        if (!this->menu->GetItems().empty()) {
-            int sel = this->menu->GetSelectedIndex();
-            if (sel < 0 || sel >= (int)this->menu->GetItems().size())
-                sel = 0;
-            this->menu->SetSelectedIndex(sel);
+        int restoredIndex = previousSelectionIndex;
+        if (!previousSelectionKey.empty()) {
+            for (std::size_t i = 0; i < this->visibleItems.size(); i++) {
+                if (BuildItemIdentityKey(this->visibleItems[i]) == previousSelectionKey) {
+                    restoredIndex = static_cast<int>(i);
+                    break;
+                }
+            }
         }
+
+        if (!this->visibleItems.empty()) {
+            if (restoredIndex < 0 || restoredIndex >= static_cast<int>(this->visibleItems.size()))
+                restoredIndex = 0;
+        } else {
+            restoredIndex = 0;
+        }
+
+        if (!this->menu->GetItems().empty()) {
+            this->menu->SetSelectedIndex(restoredIndex);
+        }
+        this->shopGridIndex = restoredIndex;
+        this->gridSelectedIndex = restoredIndex;
         this->listMarqueeIndex = -1;
         this->listVisibleTopIndex = 0;
         this->listPrevSelectedIndex = -1;
@@ -3810,12 +3996,7 @@ namespace inst::ui {
                 }
             }
             if (Down & HidNpadButton_ZR) {
-                std::string query = inst::util::softwareKeyboard("inst.shop.search_hint"_lang, this->searchQuery, 60);
-                this->searchQuery = query;
-                this->shopGridPage = -1;
-                this->gridPage = -1;
-                this->updateSectionText();
-                this->drawMenuItems(false);
+                this->openSearchSortDialog();
             }
             u64 dirKeys = Down & (HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right);
             if (dirKeys == 0) {
@@ -3989,12 +4170,7 @@ namespace inst::ui {
             }
         }
         if (Down & HidNpadButton_ZR) {
-            std::string query = inst::util::softwareKeyboard("inst.shop.search_hint"_lang, this->searchQuery, 60);
-            this->searchQuery = query;
-            this->shopGridPage = -1;
-            this->gridPage = -1;
-            this->updateSectionText();
-            this->drawMenuItems(false);
+            this->openSearchSortDialog();
         }
         if (Down & HidNpadButton_Y) {
             if (!this->isInstalledSection() && !this->isSaveSyncSection()) {
@@ -4380,9 +4556,15 @@ namespace inst::ui {
             return;
         }
         std::string fullText = text;
-        fullText += "     Desc";
         int hintFontSize = 18;
         this->butText->SetFontSize(hintFontSize);
+        const std::string descHint = "     Show Desc";
+        auto segments = BuildBottomHintSegments(fullText + descHint, 10, 20);
+        if (!segments.empty()) {
+            const auto& last = segments.back();
+            if ((last.x + last.width) <= 1270)
+                fullText += descHint;
+        }
         this->butText->SetText(fullText);
         constexpr int kHintMaxWidth = 1260;
         if (this->butText->GetTextWidth() > kHintMaxWidth) {

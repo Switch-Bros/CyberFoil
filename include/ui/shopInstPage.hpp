@@ -47,6 +47,11 @@ namespace inst::ui {
             Rectangle::Ref batteryFill;
             Rectangle::Ref batteryCap;
         private:
+            enum class BrowseSortMode {
+                Default,
+                DateDesc,
+                NameAsc
+            };
             std::vector<shopInstStuff::ShopSection> shopSections;
             std::vector<shopInstStuff::ShopItem> selectedItems;
             std::vector<shopInstStuff::ShopItem> visibleItems;
@@ -66,6 +71,7 @@ namespace inst::ui {
             bool saveSyncEnabled = false;
             bool suppressBottomHints = false;
             std::string activeShopUrl;
+            BrowseSortMode browseSortMode = BrowseSortMode::Default;
             BottomHintTouchState bottomHintTouch;
             std::vector<BottomHintSegment> bottomHintSegments;
             int selectedSectionIndex = 0;
@@ -173,6 +179,9 @@ namespace inst::ui {
             void setLoadingProgress(int percent, bool visible);
             void applyAllSectionSort();
             std::string getAllSortModeLabel() const;
+            const char* getBrowseSortLabel() const;
+            void applyBrowseSort();
+            void openSearchSortDialog();
             void drawMenuItems(bool clearItems);
             void refreshListSelectionIcons();
             void selectTitle(int selectedIndex);
