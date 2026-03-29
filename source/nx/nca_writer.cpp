@@ -38,7 +38,7 @@ void append(std::vector<u8>& buffer, const u8* ptr, u64 sz)
      memcpy(buffer.data() + offset, ptr, sz);
 }
 
-//// Wrapper over AES128-CTR to handle seek+encrypt/decrypt
+// Wrapper over AES128-CTR to handle seek+encrypt/decrypt
 class Aes128CtrCipher
 {
 public:
@@ -65,7 +65,7 @@ public:
 
 // region Header Structs
 
-//// NCZSECTN Section Header structure
+// NCZSECTN Section Header structure
 struct NczSectionHeader
 {
      u64 offset;
@@ -77,6 +77,7 @@ struct NczSectionHeader
      u8 cryptoCounter[0x10];
 } NX_PACKED;
 
+// NCZSECTN Body Header structure
 class NczHeader
 {
 public:
@@ -122,11 +123,33 @@ NcaBodyWriter::NcaBodyWriter(const NcmContentId& ncaId, u64 offset, std::shared_
 
 NcaBodyWriter::~NcaBodyWriter()
 {
-     NcaBodyWriter::flushContentBuffer();
+     NcaBodyWriter::close();
+}
+
+void NcaBodyWriter::close()
+{
+     if (isClosed()) return; // Idempotent close
+
+     doBeforeClose(); // Derived close/flush delegates so content buffer is complete
+
+     flushContentBuffer(); // Virtual dispatch - overrides expected to invoke parent
+
+     doClose(); // Derived cleanup before finalizing close
+
+     // Free resources
+     m_contentBuffer.clear(); // reclaim ok
+     m_contentStorage = NULL;
+
+     CloseableWriter::close(); // Mark as closed after all cleanups are done
 }
 
 void NcaBodyWriter::write(const  u8* ptr, u64 sz)
 {
+     if (isClosed()) {
+          LOG_DEBUG("write() called on closed NcaBodyWriter");
+          return;
+     }
+
      if (!sz) return; // no data
 
      while (sz)
@@ -153,20 +176,20 @@ void NcaBodyWriter::write(const  u8* ptr, u64 sz)
 
 void NcaBodyWriter::flushContentBuffer()
 {
+     if (isClosed()) {
+          LOG_DEBUG("flushContentBuffer() called on closed NcaBodyWriter");
+          return;
+     }
+
      if (m_contentBuffer.empty()) return; // No data
 
-     if(isOpen())
+     if (m_contentStorage)
      {
           m_contentStorage->WritePlaceholder(*(NcmPlaceHolderId*)&m_ncaId, m_offset, m_contentBuffer.data(), m_contentBuffer.size());
           m_offset += m_contentBuffer.size();
      }
 
      m_contentBuffer.resize(0);
-}
-
-bool NcaBodyWriter::isOpen() const
-{
-     return m_contentStorage != NULL;
 }
 
 // endregion
@@ -184,10 +207,16 @@ public:
           dctx = ZSTD_createDCtx();
      }
 
-     virtual ~NczBodyWriter()
+     ~NczBodyWriter() override
      {
-          close();
+          NcaBodyWriter::close();
+     }
 
+protected:
+
+     void doClose() override
+     {
+          // Free resources
           currentSectionCipher.reset(); // unique_ptr handles delete
           currentSectionIdx = (u64)-1;
           sections.clear(); // reclaim ok
@@ -199,7 +228,7 @@ public:
           }
      }
 
-     bool close()
+     void doBeforeClose() override
      {
           // Handle dangling buffer < NCZ_BODY_CHUNK_SIZE
           if (this->m_buffer.size())
@@ -207,12 +236,9 @@ public:
                processChunk(m_buffer.data(), m_buffer.size());
                m_buffer.clear(); // reclaim ok
           }
-
-          // Ensure all data is flushed to storage
-          flushContentBuffer();
-
-          return true;
      }
+
+private:
 
      // Find the section index for the specified offset
      // Returns -1 if none found
@@ -308,8 +334,15 @@ public:
           return true;
      }
 
+protected:
+
      void flushContentBuffer() override
      {
+          if (isClosed()) {
+               LOG_DEBUG("flushContentBuffer() called on closed NczBodyWriter");
+               return;
+          }
+
           const u64 encryptOffset = m_offset;
           const u64 encryptSize = m_contentBuffer.size();
 
@@ -353,8 +386,15 @@ public:
           return 1;
      }
 
+public:
+
      void write(const  u8* ptr, u64 sz) override
      {
+          if (isClosed()) {
+               LOG_DEBUG("write() called on closed NczBodyWriter");
+               return;
+          }
+
           if (!sz) return; // no data
 
           if (!m_sectionsInitialized)
@@ -375,9 +415,14 @@ public:
                     return;
                }
 
-               // assert m_buffer.size() == NczHeader::MIN_HEADER_SIZE
+               // assert m_buffer.size() >= NczHeader::MIN_HEADER_SIZE
 
                auto header = (NczHeader*)m_buffer.data();
+               if (!header->isValid())
+               {
+                    THROW_FORMAT("Invalid NCZ Header");
+               }
+
                const u64 header_size = header->size(); // Compute once
 
                // Need to buffer the rest of the header before
@@ -429,6 +474,7 @@ public:
           }
      }
 
+private:
      size_t const buffInSize = ZSTD_DStreamInSize();
      size_t const buffOutSize = ZSTD_DStreamOutSize();
 
@@ -452,35 +498,39 @@ NcaWriter::NcaWriter(const NcmContentId& ncaId, std::shared_ptr<nx::ncm::Content
 
 NcaWriter::~NcaWriter()
 {
-     close();
+     NcaWriter::close();
 }
 
-bool NcaWriter::close()
+void NcaWriter::close()
 {
+     if (isClosed()) return; // Idempotent close
+
      if (m_writer)
      {
+          m_writer->close();
           m_writer = NULL;
      }
-     else if(m_buffer.size())
+     else if (!m_buffer.empty())
      {
-          if(isOpen())
+          if (m_contentStorage)
           {
-               flushHeader();
+              flushHeader();
           }
 
           m_buffer.clear(); // reclaim ok
      }
      m_contentStorage = NULL;
-     return true;
-}
 
-bool NcaWriter::isOpen() const
-{
-     return (bool)m_contentStorage;
+     CloseableWriter::close(); // Mark as closed after all cleanups are done
 }
 
 void NcaWriter::write(const  u8* ptr, u64 sz)
 {
+     if (isClosed()) {
+          LOG_DEBUG("write() called on closed NcaWriter");
+          return;
+     }
+
      if (!sz) return; // no data
 
      if (!m_headerFlushed)
@@ -538,11 +588,11 @@ void NcaWriter::write(const  u8* ptr, u64 sz)
           if (magic == NczHeader::MAGIC)
           {
                // NOTE: Don't clear header, it needs to be written to m_write for downstream consumption
-               m_writer = std::shared_ptr<NcaBodyWriter>(new NczBodyWriter(m_ncaId, NCA_HEADER_SIZE, m_contentStorage));
+               m_writer = std::make_shared<NczBodyWriter>(m_ncaId, NCA_HEADER_SIZE, m_contentStorage);
           }
           else
           {
-               m_writer = std::shared_ptr<NcaBodyWriter>(new NcaBodyWriter(m_ncaId, NCA_HEADER_SIZE, m_contentStorage));
+               m_writer = std::make_shared<NcaBodyWriter>(m_ncaId, NCA_HEADER_SIZE, m_contentStorage);
           }
 
           // assert !m_buffer.empty()
@@ -563,7 +613,19 @@ void NcaWriter::write(const  u8* ptr, u64 sz)
 
 void NcaWriter::flushHeader()
 {
+     if (isClosed()) {
+          LOG_DEBUG("flushHeader() called on closed NcaWriter");
+          return;
+     }
+
      tin::install::NcaHeader header;
+
+     if (m_buffer.size() < sizeof(header))
+     {
+          LOG_DEBUG("Insufficient data to flush NCA header");
+          return;
+     }
+
      memcpy(&header, m_buffer.data(), sizeof(header));
      Crypto::AesXtr decryptor(Crypto::Keys().headerKey, false);
      Crypto::AesXtr encryptor(Crypto::Keys().headerKey, true);
@@ -571,7 +633,7 @@ void NcaWriter::flushHeader()
 
      if (header.magic == MAGIC_NCA3)
      {
-          if(isOpen())
+          if (m_contentStorage)
           {
                m_contentStorage->CreatePlaceholder(m_ncaId, *(NcmPlaceHolderId*)&m_ncaId, header.nca_size);
           }
@@ -587,7 +649,7 @@ void NcaWriter::flushHeader()
      }
      encryptor.encrypt(m_buffer.data(), &header, sizeof(header), 0, 0x200);
 
-     if(isOpen())
+     if (m_contentStorage)
      {
           m_contentStorage->WritePlaceholder(*(NcmPlaceHolderId*)&m_ncaId, 0, m_buffer.data(), m_buffer.size());
      }

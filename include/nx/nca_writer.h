@@ -26,21 +26,51 @@ SOFTWARE.
 #include "nx/ncm.hpp"
 #include <memory>
 
-class NcaBodyWriter
+class CloseableWriter
+{
+public:
+    // If subsclass overrides close(), class destructor expected to call $CLASS::close()
+	virtual ~CloseableWriter() { CloseableWriter::close(); }
+
+	virtual void write(const u8* data, u64 size) = 0;
+
+	// overrides should be idempotent
+	// If subclass overrides, override expected to call $PARENT::close()
+	virtual void close() { m_isClosed = true; }
+
+	bool isClosed() const { return m_isClosed; }
+
+private:
+	bool m_isClosed = false;
+};
+
+class NcaBodyWriter : public CloseableWriter
 {
 public:
 	static constexpr u64 CONTENT_BUFFER_SIZE = 0x800000; // 8MB
 
 	NcaBodyWriter(const NcmContentId& ncaId, u64 offset, std::shared_ptr<nx::ncm::ContentStorage>& contentStorage);
-	virtual ~NcaBodyWriter();
+	~NcaBodyWriter() override;
 
-	virtual void write(const  u8* ptr, u64 sz);
+	void write(const  u8* ptr, u64 sz) override;
 
-	virtual void flushContentBuffer();
-
-	bool isOpen() const;
+	// Final - Subsclasses should override doBeforeClose() + doClose()
+	void close() final;
 
 protected:
+
+	// Will be called before final flushContentBuffer()
+	// Subclasses should close/flush their writer(s)
+	virtual void doBeforeClose() {}
+
+	// Will be called before freeing internal resources
+	// Subsclasses should free their resourses
+	virtual void doClose() {}
+
+	// Subclasses who ovveride are expected to invoke $PARENT::flushContentBuffer()
+	// To *actually* flush the buffer to content storage
+	virtual void flushContentBuffer();
+
 	std::vector<u8> m_contentBuffer;
 	std::shared_ptr<nx::ncm::ContentStorage> m_contentStorage;
 	NcmContentId m_ncaId;
@@ -48,15 +78,14 @@ protected:
 	u64 m_offset;
 };
 
-class NcaWriter
+class NcaWriter : public CloseableWriter
 {
 public:
 	NcaWriter(const NcmContentId& ncaId, std::shared_ptr<nx::ncm::ContentStorage>& contentStorage);
-	virtual ~NcaWriter();
+	~NcaWriter() override;
 
-	bool isOpen() const;
-	bool close();
-	void write(const  u8* ptr, u64 sz);
+	void close() override;
+	void write(const  u8* ptr, u64 sz) override;
 	void flushHeader();
 
 protected:
