@@ -512,6 +512,11 @@ namespace tin::network
 
                     if (fatal)
                     {
+                        if (rc == 416) {
+                            LOG_DEBUG("StreamDataRange: range not satisfiable (url=%s offset=%zu size=%zu received=%zu)\n",
+                                url.c_str(), currentOffset, remaining, bytesReceived);
+                            return 1;
+                        }
                         LOG_DEBUG("StreamDataRange: fatal error, aborting (url=%s rc=%d)\n",
                             url.c_str(), rc);
                         return 1;
