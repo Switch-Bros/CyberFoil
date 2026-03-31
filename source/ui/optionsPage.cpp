@@ -565,7 +565,6 @@ namespace inst::ui {
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
             addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
             addItem("options.menu_items.shop_start_grid_mode"_lang, true, inst::config::shopStartGridMode);
-            addItem("options.menu_items.shop_reset_icons"_lang, false, false);
             addItem("Offline DB auto-check on startup", true, inst::config::offlineDbAutoCheckOnStartup);
             addItem("Offline DB update (" + dbVersion + ")", false, false);
             return;
@@ -767,7 +766,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 14, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
@@ -1044,14 +1043,6 @@ namespace inst::ui {
                     inst::config::shopAllBaseOnly = !inst::config::shopAllBaseOnly;
                     inst::config::setConfig();
                     this->refreshOptions();
-                    break;
-                case 14:
-                    if (!inst::config::shopUrl.empty()) {
-                        int confirm = inst::ui::mainApp->CreateShowDialog("options.cache_reset.title"_lang, "options.cache_reset.desc"_lang, {"options.cache_reset.confirm"_lang, "common.cancel"_lang}, false);
-                        if (confirm == 0) {
-                            shopInstStuff::ResetShopIconCache(inst::config::shopUrl);
-                        }
-                    }
                     break;
                 case 23:
                     inst::config::offlineDbAutoCheckOnStartup = !inst::config::offlineDbAutoCheckOnStartup;

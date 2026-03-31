@@ -275,56 +275,6 @@ namespace {
             inst::ui::instPage::clearInstallIcon();
     }
 
-    constexpr int kShopCacheTtlSeconds = 300;
-
-    std::string GetShopCachePath(const std::string& baseUrl)
-    {
-        std::size_t hash = std::hash<std::string>{}(baseUrl);
-        return inst::config::appDir + "/shop_cache_" + std::to_string(hash) + ".json";
-    }
-
-    bool LoadShopCache(const std::string& baseUrl, std::string& body, bool& fresh)
-    {
-        fresh = false;
-        std::string path = GetShopCachePath(baseUrl);
-        if (!std::filesystem::exists(path))
-            return false;
-
-        std::ifstream in(path, std::ios::binary);
-        if (!in)
-            return false;
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        body = ss.str();
-        if (body.empty())
-            return false;
-
-        auto ftime = std::filesystem::last_write_time(path);
-        auto now = std::chrono::system_clock::now();
-        auto ftime_sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            ftime - std::filesystem::file_time_type::clock::now() + now);
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime_sys).count();
-        fresh = age >= 0 && age <= kShopCacheTtlSeconds;
-        return true;
-    }
-
-    void SaveShopCache(const std::string& baseUrl, const std::string& body)
-    {
-        if (body.empty())
-            return;
-        std::string path = GetShopCachePath(baseUrl);
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out)
-            return;
-        out << body;
-    }
-
-    std::string GetShopPrefetchMarker(const std::string& baseUrl)
-    {
-        std::size_t hash = std::hash<std::string>{}(baseUrl);
-        return inst::config::appDir + "/shop_icons_prefetch_" + std::to_string(hash) + ".done";
-    }
-
     bool TryParseTitleId(const nlohmann::json& entry, std::uint64_t& out);
     bool TryParseAppVersion(const nlohmann::json& entry, std::uint32_t& out);
     bool TryParseAppType(const nlohmann::json& entry, std::int32_t& out);
@@ -1245,7 +1195,7 @@ namespace shopInstStuff {
         return items;
     }
 
-    std::vector<ShopSection> FetchShopSections(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, bool allowCache, bool* outUsedLegacyFallback, const ShopFetchProgressCallback& progressCb)
+    std::vector<ShopSection> FetchShopSections(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, bool* outUsedLegacyFallback, const ShopFetchProgressCallback& progressCb)
     {
         std::vector<ShopSection> sections;
         error.clear();
@@ -1256,19 +1206,6 @@ namespace shopInstStuff {
         if (baseUrl.empty()) {
             error = "Shop URL is empty.";
             return sections;
-        }
-
-        if (allowCache) {
-            std::string cachedBody;
-            bool fresh = false;
-            if (LoadShopCache(baseUrl, cachedBody, fresh) && fresh) {
-                std::string cacheError;
-                sections = ParseShopSectionsBody(cachedBody, baseUrl, cacheError);
-                if (!sections.empty()) {
-                    error.clear();
-                    return sections;
-                }
-            }
         }
 
         auto tryLegacyFallback = [&]() -> bool {
@@ -1301,45 +1238,13 @@ namespace shopInstStuff {
             }
             if (tryLegacyFallback())
                 return sections;
-            if (allowCache) {
-                std::string cachedBody;
-                bool fresh = false;
-                if (LoadShopCache(baseUrl, cachedBody, fresh)) {
-                    std::string cacheError;
-                    sections = ParseShopSectionsBody(cachedBody, baseUrl, cacheError);
-                    if (!sections.empty()) {
-                        error.clear();
-                        return sections;
-                    }
-                }
-            }
             return sections;
         }
 
         sections = ParseShopSectionsBody(fetch.body, baseUrl, error);
         if (sections.empty() && !error.empty() && tryLegacyFallback())
             return sections;
-        if (!sections.empty())
-            SaveShopCache(baseUrl, fetch.body);
         return sections;
-    }
-
-    void ResetShopIconCache(const std::string& shopUrl)
-    {
-        std::string baseUrl = NormalizeShopUrl(shopUrl);
-        if (baseUrl.empty())
-            return;
-        std::string marker = GetShopPrefetchMarker(baseUrl);
-        std::error_code ec;
-        if (std::filesystem::exists(marker, ec))
-            std::filesystem::remove(marker, ec);
-        std::string cacheDir = inst::config::appDir + "/shop_icons";
-        if (std::filesystem::exists(cacheDir, ec)) {
-            for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
-                if (entry.is_regular_file())
-                    std::filesystem::remove(entry.path(), ec);
-            }
-        }
     }
 
     namespace {
