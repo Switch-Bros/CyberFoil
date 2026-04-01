@@ -35,6 +35,7 @@
 #include "util/curl.hpp"
 #include "util/error.hpp"
 #include "util/hauth.hpp"
+#include "util/install_diagnostics.hpp"
 #include "util/json.hpp"
 #include "util/lang.hpp"
 #include "util/network_util.hpp"
@@ -2184,6 +2185,7 @@ namespace shopInstStuff {
         inst::ui::instPage::loadInstallScreen();
         bool nspInstalled = true;
         NcmStorageId destStorageId = storage ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
+        inst::diag::StartSession("shop", items.size());
 
         std::vector<std::string> names;
         names.reserve(items.size());
@@ -2207,15 +2209,18 @@ namespace shopInstStuff {
             for (size_t i = 0; i < items.size(); i++) {
                 LOG_DEBUG("%s %s\n", "Install request from", items[i].url.c_str());
                 currentName = names[i];
+                inst::diag::NoteTransferReceived(currentName);
                 UpdateInstallIcon(items[i]);
                 inst::ui::instPage::setTopInstInfoText("inst.info_page.top_info0"_lang + currentName + sourceLabel);
                 std::unique_ptr<tin::install::Install> installTask;
                 bool isXci = IsXciExtension(items[i].name) || IsXciExtension(items[i].url) || IsXciMagic(items[i].url);
                 if (isXci) {
-                    inst::ui::instPage::setInstInfoText("inst.info_page.preparing"_lang);
+                    inst::ui::instPage::setInstInfoText("Transfer received. Install started...");
+                    inst::diag::NoteInstallStarted(currentName);
                     if (!InstallXciHttpStream(items[i].url, destStorageId)) {
                         THROW_FORMAT("Failed to install XCI from shop.");
                     }
+                    inst::diag::RecordSuccess(currentName);
                     continue;
                 } else {
                     auto httpNSP = std::make_shared<tin::install::nsp::HTTPNSP>(items[i].url);
@@ -2223,10 +2228,13 @@ namespace shopInstStuff {
                 }
 
                 LOG_DEBUG("%s\n", "Preparing installation");
-                inst::ui::instPage::setInstInfoText("inst.info_page.preparing"_lang);
+                inst::ui::instPage::setInstInfoText("Transfer received. Install started...");
                 inst::ui::instPage::setInstBarPerc(0);
+                inst::diag::NoteInstallStarted(currentName);
                 installTask->Prepare();
                 installTask->Begin();
+                inst::diag::RecordSuccess(currentName);
+                inst::ui::instPage::setInstInfoText("Install succeeded: " + currentName);
             }
         }
         catch (std::exception& e) {
@@ -2235,11 +2243,12 @@ namespace shopInstStuff {
             fprintf(stdout, "%s", e.what());
             std::string failedName = currentName.empty() ? names.front() : currentName;
             const std::string errorText = e.what();
-            const bool canceled = errorText.find("Installation canceled.") != std::string::npos;
-            if (canceled) {
+            const auto failure = inst::diag::ClassifyFailure(errorText);
+            inst::diag::RecordFailure(failedName, failure);
+            if (failure.canceled) {
                 inst::ui::instPage::setInstInfoText("Installation canceled.");
                 inst::ui::instPage::setInstBarPerc(0);
-                inst::ui::mainApp->CreateShowDialog("Canceled", "Installation canceled by user.", {"common.ok"_lang}, true);
+                inst::ui::mainApp->CreateShowDialog("Canceled", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
             } else {
                 inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + failedName);
                 inst::ui::instPage::setInstBarPerc(0);
@@ -2247,7 +2256,7 @@ namespace shopInstStuff {
                 if (!inst::config::soundEnabled) audioPath = "";
                 if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
                 std::thread audioThread(inst::util::playAudio, audioPath);
-                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", "inst.info_page.failed_desc"_lang + "\n\n" + errorText, {"common.ok"_lang}, true);
+                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
                 audioThread.join();
             }
             nspInstalled = false;

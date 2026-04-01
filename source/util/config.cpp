@@ -34,6 +34,7 @@ namespace inst::config {
     bool shopAllBaseOnly;
     bool shopStartGridMode;
     bool offlineDbAutoCheckOnStartup;
+    bool verboseInstallLogging;
 
     namespace {
         std::string ToLower(std::string value)
@@ -655,6 +656,7 @@ namespace inst::config {
             {"shopAllBaseOnly", shopAllBaseOnly},
             {"shopStartGridMode", shopStartGridMode},
             {"offlineDbAutoCheckOnStartup", offlineDbAutoCheckOnStartup},
+            {"verboseInstallLogging", verboseInstallLogging},
             {"shopRememberSelection", false},
             {"shopSelection", nlohmann::json::array()}
         };
@@ -687,6 +689,7 @@ namespace inst::config {
         shopAllBaseOnly = false;
         shopStartGridMode = false;
         offlineDbAutoCheckOnStartup = true;
+        verboseInstallLogging = false;
         bool hasHttpUserAgentModeKey = false;
         bool needsConfigRewrite = false;
 
@@ -721,6 +724,7 @@ namespace inst::config {
             if (j.contains("shopAllBaseOnly")) shopAllBaseOnly = j["shopAllBaseOnly"].get<bool>();
             if (j.contains("shopStartGridMode")) shopStartGridMode = j["shopStartGridMode"].get<bool>();
             if (j.contains("offlineDbAutoCheckOnStartup")) offlineDbAutoCheckOnStartup = j["offlineDbAutoCheckOnStartup"].get<bool>();
+            if (j.contains("verboseInstallLogging")) verboseInstallLogging = j["verboseInstallLogging"].get<bool>();
 
             static const char* currentKeys[] = {
                 "autoUpdate",
@@ -746,7 +750,8 @@ namespace inst::config {
                 "shopHideInstalledSection",
                 "shopAllBaseOnly",
                 "shopStartGridMode",
-                "offlineDbAutoCheckOnStartup"
+                "offlineDbAutoCheckOnStartup",
+                "verboseInstallLogging"
             };
 
             for (const char* key : currentKeys) {

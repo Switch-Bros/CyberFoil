@@ -541,6 +541,7 @@ namespace inst::ui {
         if (this->selectedSection == 0) {
             addItem("options.menu_items.ignore_firm"_lang, true, inst::config::ignoreReqVers);
             addItem("options.menu_items.nca_verify"_lang, true, inst::config::validateNCAs);
+            addItem("Verbose install logs", true, inst::config::verboseInstallLogging);
             addItem("options.menu_items.boost_mode"_lang, true, inst::config::overClock);
             addItem("options.menu_items.ask_delete"_lang, true, inst::config::deletePrompt);
             addItem("options.menu_items.sound"_lang, true, inst::config::soundEnabled);
@@ -761,7 +762,7 @@ namespace inst::ui {
             std::vector<std::string> languageList;
             int selectedIndex = this->menu->GetSelectedIndex();
             if (this->selectedSection == 0) {
-                static const int kGeneralMap[] = {0, 1, 2, 3, 6, 7, 8};
+                static const int kGeneralMap[] = {0, 1, 10, 2, 3, 6, 7, 8};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
@@ -788,6 +789,11 @@ namespace inst::ui {
                     break;
                 case 2:
                     inst::config::overClock = !inst::config::overClock;
+                    inst::config::setConfig();
+                    this->refreshOptions();
+                    break;
+                case 10:
+                    inst::config::verboseInstallLogging = !inst::config::verboseInstallLogging;
                     inst::config::setConfig();
                     this->refreshOptions();
                     break;

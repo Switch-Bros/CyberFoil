@@ -39,6 +39,7 @@ SOFTWARE.
 #include "util/error.hpp"
 #include "util/network_util.hpp"
 #include "util/config.hpp"
+#include "util/install_diagnostics.hpp"
 #include "util/util.hpp"
 #include "util/curl.hpp"
 #include "util/lang.hpp"
@@ -140,9 +141,11 @@ namespace netInstStuff{
         inst::ui::instPage::loadInstallScreen();
         bool nspInstalled = true;
         NcmStorageId m_destStorageId = NcmStorageId_SdCard;
+        std::string currentName;
 
         if (ourStorage) m_destStorageId = NcmStorageId_BuiltInUser;
         unsigned int urlItr;
+        inst::diag::StartSession("network", ourUrlList.size());
 
         std::vector<std::string> urlNames;
         if (urlListAltNames.size() > 0) {
@@ -165,7 +168,9 @@ namespace netInstStuff{
         try {
             for (urlItr = 0; urlItr < ourUrlList.size(); urlItr++) {
                 LOG_DEBUG("%s %s\n", "Install request from", ourUrlList[urlItr].c_str());
-                inst::ui::instPage::setTopInstInfoText("inst.info_page.top_info0"_lang + urlNames[urlItr] + ourSource);
+                currentName = urlNames[urlItr];
+                inst::diag::NoteTransferReceived(currentName);
+                inst::ui::instPage::setTopInstInfoText("inst.info_page.top_info0"_lang + currentName + ourSource);
                 std::unique_ptr<tin::install::Install> installTask;
 
                 if (inst::curl::downloadToBuffer(ourUrlList[urlItr], 0x100, 0x103) == "HEAD") {
@@ -177,10 +182,13 @@ namespace netInstStuff{
                 }
 
                 LOG_DEBUG("%s\n", "Preparing installation");
-                inst::ui::instPage::setInstInfoText("inst.info_page.preparing"_lang);
+                inst::ui::instPage::setInstInfoText("Transfer received. Install started...");
                 inst::ui::instPage::setInstBarPerc(0);
+                inst::diag::NoteInstallStarted(currentName);
                 installTask->Prepare();
                 installTask->Begin();
+                inst::diag::RecordSuccess(currentName);
+                inst::ui::instPage::setInstInfoText("Install succeeded: " + currentName);
             }
         }
         catch (std::exception& e) {
@@ -188,19 +196,23 @@ namespace netInstStuff{
             LOG_DEBUG("%s", e.what());
             fprintf(stdout, "%s", e.what());
             const std::string errorText = e.what();
-            const bool canceled = errorText.find("Installation canceled.") != std::string::npos;
-            if (canceled) {
+            const std::string failedName = currentName.empty()
+                ? (urlNames.empty() ? std::string("unknown item") : urlNames.front())
+                : currentName;
+            const auto failure = inst::diag::ClassifyFailure(errorText);
+            inst::diag::RecordFailure(failedName, failure);
+            if (failure.canceled) {
                 inst::ui::instPage::setInstInfoText("Installation canceled.");
                 inst::ui::instPage::setInstBarPerc(0);
-                inst::ui::mainApp->CreateShowDialog("Canceled", "Installation canceled by user.", {"common.ok"_lang}, true);
+                inst::ui::mainApp->CreateShowDialog("Canceled", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
             } else {
-                inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + urlNames[urlItr]);
+                inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + failedName);
                 inst::ui::instPage::setInstBarPerc(0);
                 std::string audioPath = "romfs:/audio/bark.wav";
                 if (!inst::config::soundEnabled) audioPath = "";
                 if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
                 std::thread audioThread(inst::util::playAudio,audioPath);
-                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + urlNames[urlItr] + "!", "inst.info_page.failed_desc"_lang + "\n\n" + errorText, {"common.ok"_lang}, true);
+                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
                 audioThread.join();
             }
             nspInstalled = false;
