@@ -5,9 +5,13 @@ build
 .vscode
 include/Plutonium
 AGENTS.md
-MakeRelease.bat
 logs/
 *.lst
 scripts
 *.zip
+*.pem
+*.key
+*.pub
+*.ps1
+*.log
 

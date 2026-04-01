@@ -64,6 +64,15 @@ DEFINES	+=	-DAPP_VERSION=\"$(APP_VERSION)\"
 ifneq ($(strip $(HAUTH_SEED_OBF_HEX)),)
 DEFINES += -DHAUTH_SEED_OBF_HEX=\"$(HAUTH_SEED_OBF_HEX)\"
 endif
+ifneq ($(strip $(EMBEDDED_SHOP_KEY_OBF_HEX)),)
+DEFINES += -DEMBEDDED_SHOP_KEY_OBF_HEX=\"$(EMBEDDED_SHOP_KEY_OBF_HEX)\"
+endif
+ifneq ($(strip $(EMBEDDED_SHOP_KEY_OBF_KEY_HEX)),)
+DEFINES += -DEMBEDDED_SHOP_KEY_OBF_KEY_HEX=\"$(EMBEDDED_SHOP_KEY_OBF_KEY_HEX)\"
+endif
+ifeq ($(DEBUG),1)
+DEFINES += -DAPP_DEBUG_LOG
+endif
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
@@ -72,7 +81,7 @@ CFLAGS	+=	 `curl-config --cflags`
 CFLAGS	+=	 `sdl2-config --cflags`
 CFLAGS	+=	`$(PREFIX)pkg-config --cflags libturbojpeg freetype2`
 
-CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DGPL_BUILD -Wall #-Werror -D__DEBUG__ -DNXLINK_DEBUG
+CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DGPL_BUILD -Wall #-Werror -D__DEBUG__
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -std=gnu++20
 
