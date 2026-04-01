@@ -36,7 +36,7 @@ jobs:
           fi
           if [ -n "${SHOP_ENC:-}" ]; then
             EMBEDDED_SHOP_KEY_OBF_KEY_HEX="$(openssl rand -hex 16)"
-            EMBEDDED_SHOP_KEY_OBF_HEX="$(printf '%s' "$SHOP_ENC" | openssl enc -aes-128-ecb -K "$EMBEDDED_SHOP_KEY_OBF_KEY_HEX" -nosalt | xxd -p -c 100000 | tr -d '\n')"
+            EMBEDDED_SHOP_KEY_OBF_HEX="$(printf '%s' "$SHOP_ENC" | openssl enc -aes-128-ecb -K "$EMBEDDED_SHOP_KEY_OBF_KEY_HEX" -nosalt | od -An -v -tx1 | tr -d ' \n')"
             MAKE_ARGS+=("EMBEDDED_SHOP_KEY_OBF_HEX=$EMBEDDED_SHOP_KEY_OBF_HEX")
             MAKE_ARGS+=("EMBEDDED_SHOP_KEY_OBF_KEY_HEX=$EMBEDDED_SHOP_KEY_OBF_KEY_HEX")
           fi
