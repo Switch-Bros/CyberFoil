@@ -236,7 +236,10 @@ namespace tin::network
         const std::string revisionHeader = "Revision: " + revisionValue;
         const std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
         const std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
-        const std::string uauthHeader = "UAUTH: 0";
+        const std::string uauthHeader = "UAUTH: " + inst::util::ComputeUauthFromUrl(
+            requestUrl,
+            g_basic_auth_set ? g_basic_auth_user : "",
+            g_basic_auth_set ? g_basic_auth_pass : "");
         headerList = curl_slist_append(headerList, themeHeader.c_str());
         headerList = curl_slist_append(headerList, languageHeader.c_str());
         headerList = curl_slist_append(headerList, hauthHeader.c_str());

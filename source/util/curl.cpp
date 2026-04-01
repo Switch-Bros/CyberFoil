@@ -112,7 +112,7 @@ static void buildVersionAndRevision(std::string& outVersion, std::string& outRev
         outRevision = revisionToken.substr(0, digitsEnd);
 }
 
-static std::vector<std::string> buildShopHeaders(const std::string& requestUrl)
+static std::vector<std::string> buildShopHeaders(const std::string& requestUrl, const std::string& user, const std::string& pass)
 {
     std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
     std::string versionValue;
@@ -122,6 +122,7 @@ static std::vector<std::string> buildShopHeaders(const std::string& requestUrl)
     std::string revisionHeader = "Revision: " + revisionValue;
     std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
     std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
+    std::string uauthHeader = "UAUTH: " + inst::util::ComputeUauthFromUrl(requestUrl, user, pass);
     std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
     return {
         themeHeader,
@@ -130,7 +131,7 @@ static std::vector<std::string> buildShopHeaders(const std::string& requestUrl)
         revisionHeader,
         languageHeader,
         hauthHeader,
-        "UAUTH: 0"
+        uauthHeader
     };
 }
 
@@ -499,7 +500,7 @@ namespace inst::curl {
         curl_easy_setopt(curl_handle, CURLOPT_FAILONERROR, 1L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = buildShopHeaders(ourUrl);
+        const auto headers = buildShopHeaders(ourUrl, user, pass);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -555,7 +556,7 @@ namespace inst::curl {
         curl_easy_setopt(curl_handle, CURLOPT_FAILONERROR, 1L);
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = buildShopHeaders(ourUrl);
+        const auto headers = buildShopHeaders(ourUrl, user, pass);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)

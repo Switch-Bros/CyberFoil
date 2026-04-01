@@ -517,7 +517,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl)
+    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl, const std::string& user, const std::string& pass)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -527,6 +527,7 @@ namespace {
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
         std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
+        std::string uauthHeader = "UAUTH: " + inst::util::ComputeUauthFromUrl(requestUrl, user, pass);
         std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
         return {
             themeHeader,
@@ -535,7 +536,7 @@ namespace {
             revisionHeader,
             languageHeader,
             hauthHeader,
-            "UAUTH: 0"
+            uauthHeader
         };
     }
 
@@ -1396,7 +1397,7 @@ namespace shopInstStuff {
         }
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildTinfoilHeaders(url);
+        const auto headers = BuildTinfoilHeaders(url, user, pass);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
