@@ -490,8 +490,6 @@ namespace inst::config {
             return "chrome";
         if (normalized == "safari")
             return "safari";
-        if (normalized == "tinfoil")
-            return "tinfoil";
         if (normalized == "firefox")
             return "firefox";
         if (normalized == "custom")

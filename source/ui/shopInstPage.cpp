@@ -3596,7 +3596,7 @@ namespace inst::ui {
             this->setLoadingProgress(loadingPercent, true);
             mainApp->CallForRender();
         };
-        this->shopSections = shopInstStuff::FetchShopSections(shopUrl, inst::config::shopUser, inst::config::shopPass, error, &usedLegacyFallback, fetchProgressCb);
+        this->shopSections = shopInstStuff::FetchShopSections(shopUrl, inst::config::shopUser, inst::config::shopPass, error, !forceRefresh, &usedLegacyFallback, fetchProgressCb);
         loadingPercent = std::max(loadingPercent, 82);
         this->setLoadingProgress(loadingPercent, true);
         mainApp->CallForRender();

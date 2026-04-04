@@ -56,10 +56,6 @@ namespace inst::offline::dbupdate
 
         void OfflineDbTrace(const char* fmt, ...)
         {
-#ifndef APP_DEBUG_LOG
-            (void)fmt;
-            return;
-#else
             const std::uint64_t idx = g_offlineDbTraceCount.fetch_add(1, std::memory_order_relaxed);
             if (idx >= kOfflineDbTraceMaxLines) {
                 return;
@@ -78,18 +74,13 @@ namespace inst::offline::dbupdate
             }
             std::fprintf(f, "%llu %s\n", static_cast<unsigned long long>(idx), msg);
             std::fclose(f);
-#endif
         }
 
         void ResetOfflineDbTrace()
         {
-#ifndef APP_DEBUG_LOG
-            return;
-#else
             std::lock_guard<std::mutex> lock(g_offlineDbTraceMutex);
             std::remove(kOfflineDbTracePath);
             g_offlineDbTraceCount.store(0, std::memory_order_relaxed);
-#endif
         }
 
         std::string Trim(const std::string& text)

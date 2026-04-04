@@ -11,7 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAUTH_SEED: ${{ secrets.HAUTH_SEED }}
-      SHOP_ENC: ${{ secrets.SHOP_ENC }}
 
     container:
       image: devkitpro/devkita64:latest
@@ -29,18 +28,12 @@ jobs:
           set -euo pipefail
 
           dkp-pacman -S --noconfirm --needed switch-ntfs-3g switch-lwext4
-          MAKE_ARGS=(-j"$(nproc)")
           if [ -n "${HAUTH_SEED:-}" ]; then
             HAUTH_SEED_OBF_HEX="$(python3 -c 'import os; s=os.environ.get("HAUTH_SEED", "").strip().encode("utf-8"); print("".join(f"{(b ^ ((0xA7 + ((i * 37) + 0x5C)) & 0xFF)):02x}" for i, b in enumerate(s)))')"
-            MAKE_ARGS+=("HAUTH_SEED_OBF_HEX=$HAUTH_SEED_OBF_HEX")
+            make -j"$(nproc)" HAUTH_SEED_OBF_HEX="$HAUTH_SEED_OBF_HEX"
+          else
+            make -j"$(nproc)"
           fi
-          if [ -n "${SHOP_ENC:-}" ]; then
-            EMBEDDED_SHOP_KEY_OBF_KEY_HEX="$(openssl rand -hex 16)"
-            EMBEDDED_SHOP_KEY_OBF_HEX="$(printf '%s' "$SHOP_ENC" | openssl enc -aes-128-ecb -K "$EMBEDDED_SHOP_KEY_OBF_KEY_HEX" -nosalt | xxd -p -c 100000 | tr -d '\n')"
-            MAKE_ARGS+=("EMBEDDED_SHOP_KEY_OBF_HEX=$EMBEDDED_SHOP_KEY_OBF_HEX")
-            MAKE_ARGS+=("EMBEDDED_SHOP_KEY_OBF_KEY_HEX=$EMBEDDED_SHOP_KEY_OBF_KEY_HEX")
-          fi
-          make "${MAKE_ARGS[@]}"
 
           # Your Makefile outputs ./cyberfoil.nro (TARGET := cyberfoil)
           if [ ! -f "./cyberfoil.nro" ]; then

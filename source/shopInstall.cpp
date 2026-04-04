@@ -1,23 +1,16 @@
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <curl/curl.h>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <mbedtls/aes.h>
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/pk.h>
-#include <mbedtls/rsa.h>
-#include <zlib.h>
-#include <zstd.h>
 #include "shopInstall.hpp"
 #include "install/http_nsp.hpp"
 #include "install/http_xci.hpp"
@@ -26,7 +19,6 @@
 #include "install/install_xci.hpp"
 #include "nx/nca_writer.h"
 #include "util/file_util.hpp"
-#include "util/embedded_shop_key.hpp"
 #include "util/offline_title_db.hpp"
 #include "util/title_util.hpp"
 #include "ui/MainApplication.hpp"
@@ -47,12 +39,6 @@ namespace inst::ui {
 }
 
 namespace {
-    constexpr std::size_t kTinfoilHeaderSize = 0x110;
-    constexpr std::size_t kTinfoilWrappedKeySize = 0x100;
-    constexpr unsigned char kTinfoilEncryptedFlag = 0xF0;
-    constexpr unsigned char kTinfoilCompressionZstd = 0x0D;
-    constexpr unsigned char kTinfoilCompressionZlib = 0x0E;
-
     std::string FormatOneDecimal(double value)
     {
         char buf[32];
@@ -84,379 +70,6 @@ namespace {
         auto out = reinterpret_cast<std::string*>(userdata);
         out->append(ptr, size * numItems);
         return size * numItems;
-    }
-
-    std::uint64_t ReadLe64(const unsigned char* ptr)
-    {
-        std::uint64_t value = 0;
-        for (std::size_t i = 0; i < sizeof(value); i++)
-            value |= static_cast<std::uint64_t>(ptr[i]) << (i * 8);
-        return value;
-    }
-
-    bool IsTinfoilIndex(const std::string& body)
-    {
-        return body.size() >= 8 && body.rfind("TINFOIL", 0) == 0;
-    }
-
-    bool DecompressZlibBuffer(const std::vector<unsigned char>& in, std::string& out)
-    {
-        out.clear();
-        if (in.empty())
-            return true;
-
-        z_stream stream{};
-        stream.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(in.data()));
-        stream.avail_in = static_cast<uInt>(in.size());
-        if (inflateInit(&stream) != Z_OK)
-            return false;
-
-        static constexpr std::size_t kChunkSize = 4096;
-        int rc = Z_OK;
-        std::array<char, kChunkSize> chunk{};
-        while (true) {
-            stream.next_out = reinterpret_cast<Bytef*>(chunk.data());
-            stream.avail_out = static_cast<uInt>(chunk.size());
-            rc = inflate(&stream, Z_NO_FLUSH);
-            if (rc != Z_OK && rc != Z_STREAM_END)
-                break;
-
-            const std::size_t produced = chunk.size() - stream.avail_out;
-            if (produced > 0)
-                out.append(chunk.data(), produced);
-
-            if (rc == Z_STREAM_END)
-                break;
-        }
-        inflateEnd(&stream);
-        if (rc != Z_STREAM_END)
-            return false;
-        return true;
-    }
-
-    bool DecompressZstdBuffer(const std::vector<unsigned char>& in, std::string& out)
-    {
-        out.clear();
-        if (in.empty())
-            return true;
-
-        std::size_t srcOffset = 0;
-
-        while (srcOffset < in.size()) {
-            while (srcOffset < in.size() && in[srcOffset] == 0)
-                srcOffset++;
-            if (srcOffset >= in.size())
-                break;
-
-            const size_t frameSize = ZSTD_findFrameCompressedSize(in.data() + srcOffset, in.size() - srcOffset);
-            if (ZSTD_isError(frameSize) || frameSize == 0 || (srcOffset + frameSize) > in.size()) {
-                LOG_DEBUG("TINFOIL zstd frame parse failed: src_offset=%zu remaining=%zu rc=%s\n",
-                    srcOffset, in.size() - srcOffset, ZSTD_getErrorName(frameSize));
-                out.clear();
-                return false;
-            }
-
-            const unsigned long long frameContentSize = ZSTD_getFrameContentSize(in.data() + srcOffset, frameSize);
-            if (frameContentSize == ZSTD_CONTENTSIZE_ERROR || frameContentSize == ZSTD_CONTENTSIZE_UNKNOWN) {
-                LOG_DEBUG("TINFOIL zstd frame content size unavailable: src_offset=%zu frame_size=%zu\n",
-                    srcOffset, frameSize);
-                out.clear();
-                return false;
-            }
-            if (frameContentSize > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) {
-                LOG_DEBUG("TINFOIL zstd frame content size too large: %llu\n", frameContentSize);
-                out.clear();
-                return false;
-            }
-
-            const std::size_t frameOutputOffset = out.size();
-            out.resize(frameOutputOffset + static_cast<std::size_t>(frameContentSize));
-            const size_t rc = ZSTD_decompress(out.data() + frameOutputOffset, static_cast<std::size_t>(frameContentSize),
-                in.data() + srcOffset, frameSize);
-            if (ZSTD_isError(rc)) {
-                LOG_DEBUG("TINFOIL zstd frame decompress failed: src_offset=%zu frame_size=%zu expected=%llu rc=%s\n",
-                    srcOffset, frameSize, frameContentSize, ZSTD_getErrorName(rc));
-                out.clear();
-                return false;
-            }
-            if (rc != frameContentSize) {
-                LOG_DEBUG("TINFOIL zstd frame output mismatch: src_offset=%zu frame_size=%zu actual=%zu expected=%llu\n",
-                    srcOffset, frameSize, rc, frameContentSize);
-                out.clear();
-                return false;
-            }
-
-            LOG_DEBUG("TINFOIL zstd frame decoded: src_offset=%zu frame_size=%zu produced=%zu total_out=%zu\n",
-                srcOffset, frameSize, rc, out.size());
-            srcOffset += frameSize;
-        }
-
-        return true;
-    }
-
-    void LogPayloadPrefix(const char* label, const std::vector<unsigned char>& payload, std::size_t maxBytes = 64)
-    {
-        const std::size_t dumpSize = std::min(payload.size(), maxBytes);
-        LOG_DEBUG("%s prefix (%zu bytes shown of %zu)\n", label, dumpSize, payload.size());
-        if (dumpSize > 0)
-            printBytes(const_cast<u8*>(reinterpret_cast<const u8*>(payload.data())), dumpSize, true);
-    }
-
-    void LogJsonPreview(const char* label, const std::string& body, std::size_t maxChars = 512)
-    {
-        const std::size_t previewSize = std::min(body.size(), maxChars);
-        LOG_DEBUG("%s preview (%zu chars shown of %zu)\n", label, previewSize, body.size());
-        if (previewSize > 0)
-            LOG_DEBUG("%s\n", body.substr(0, previewSize).c_str());
-    }
-
-    void LogJsonTopLevelKeys(const char* label, const nlohmann::json& value)
-    {
-        if (!value.is_object()) {
-            LOG_DEBUG("%s top-level type is not object\n", label);
-            return;
-        }
-
-        std::string keys;
-        for (auto it = value.begin(); it != value.end(); ++it) {
-            if (!keys.empty())
-                keys += ", ";
-            keys += it.key();
-        }
-        LOG_DEBUG("%s top-level keys: %s\n", label, keys.c_str());
-    }
-
-    bool TryLoadShopPrivateKey(std::vector<unsigned char>& keyPem, std::string& keyPath)
-    {
-        keyPem.clear();
-        keyPath = "<embedded>";
-        return inst::util::LoadEmbeddedShopPrivateKey(keyPem);
-    }
-
-    bool TryGetCachedShopPrivateKey(mbedtls_pk_context& outPk, std::string& keyPath)
-    {
-        static bool cacheInitialized = false;
-        static bool cacheValid = false;
-        static std::string cachedKeyPath;
-        static mbedtls_pk_context cachedPk;
-
-        if (!cacheInitialized) {
-            cacheInitialized = true;
-            mbedtls_pk_init(&cachedPk);
-
-            constexpr int kMaxAttempts = 3;
-            for (int attempt = 1; attempt <= kMaxAttempts; attempt++) {
-                std::vector<unsigned char> keyPem;
-                std::string attemptPath;
-                if (!TryLoadShopPrivateKey(keyPem, attemptPath)) {
-                    LOG_DEBUG("TINFOIL key cache load failed: attempt=%d\n", attempt);
-                    continue;
-                }
-
-                LOG_DEBUG("TINFOIL key cache load: attempt=%d path=%s bytes=%zu\n", attempt, attemptPath.c_str(), keyPem.size());
-                keyPem.push_back(0);
-
-                const int rc = mbedtls_pk_parse_key(&cachedPk, keyPem.data(), keyPem.size(), nullptr, 0);
-                if (rc == 0) {
-                    cacheValid = true;
-                    cachedKeyPath = attemptPath;
-                    LOG_DEBUG("TINFOIL key cache ready: path=%s\n", cachedKeyPath.c_str());
-                    break;
-                }
-
-                LOG_DEBUG("TINFOIL key cache parse failed: attempt=%d rc=%d\n", attempt, rc);
-                mbedtls_pk_free(&cachedPk);
-                mbedtls_pk_init(&cachedPk);
-            }
-        }
-
-        keyPath = cachedKeyPath;
-        if (!cacheValid)
-            return false;
-
-        mbedtls_pk_init(&outPk);
-        const int rc = mbedtls_pk_setup(&outPk, mbedtls_pk_info_from_type(mbedtls_pk_get_type(&cachedPk)));
-        if (rc != 0) {
-            LOG_DEBUG("TINFOIL key cache clone setup failed rc=%d\n", rc);
-            mbedtls_pk_free(&outPk);
-            return false;
-        }
-
-        if (!mbedtls_pk_can_do(&cachedPk, MBEDTLS_PK_RSA) || !mbedtls_pk_can_do(&outPk, MBEDTLS_PK_RSA)) {
-            LOG_DEBUG("TINFOIL key cache clone failed: non-RSA cached key\n");
-            mbedtls_pk_free(&outPk);
-            return false;
-        }
-
-        const int copyRc = mbedtls_rsa_copy(mbedtls_pk_rsa(outPk), mbedtls_pk_rsa(cachedPk));
-        if (copyRc != 0) {
-            LOG_DEBUG("TINFOIL key cache clone copy failed rc=%d\n", copyRc);
-            mbedtls_pk_free(&outPk);
-            return false;
-        }
-
-        return true;
-    }
-
-    bool TryDecodeTinfoilIndex(const std::string& body, std::string& outPlain, std::string& error)
-    {
-        outPlain.clear();
-        error.clear();
-
-        if (!IsTinfoilIndex(body))
-            return true;
-        if (body.size() < kTinfoilHeaderSize) {
-            LOG_DEBUG("TINFOIL decode failed: body too small (%zu bytes)\n", body.size());
-            error = "Encrypted shop response is truncated.";
-            return false;
-        }
-
-        const unsigned char info = static_cast<unsigned char>(body[7]);
-        const bool encrypted = (info & kTinfoilEncryptedFlag) == kTinfoilEncryptedFlag;
-        const unsigned char compression = static_cast<unsigned char>(info & 0x0F);
-        const std::uint64_t plainSize64 = ReadLe64(reinterpret_cast<const unsigned char*>(body.data()) + 0x108);
-        LOG_DEBUG("TINFOIL header: total=%zu info=0x%02x encrypted=%d compression=0x%02x plain_size=%llu\n",
-            body.size(), info, encrypted ? 1 : 0, compression, static_cast<unsigned long long>(plainSize64));
-        if (plainSize64 > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-            LOG_DEBUG("TINFOIL decode failed: plain size too large for platform\n");
-            error = "Encrypted shop response is too large.";
-            return false;
-        }
-        const std::size_t plainSize = static_cast<std::size_t>(plainSize64);
-
-        std::vector<unsigned char> payload(body.begin() + static_cast<std::ptrdiff_t>(kTinfoilHeaderSize), body.end());
-        LOG_DEBUG("TINFOIL payload: encrypted_bytes=%zu\n", payload.size());
-        if (encrypted) {
-            std::string keyPath;
-            mbedtls_pk_context pk;
-            if (!TryGetCachedShopPrivateKey(pk, keyPath)) {
-                LOG_DEBUG("TINFOIL decode failed: embedded private key is unavailable\n");
-                error = "Encrypted shop response requires an embedded private key.";
-                return false;
-            }
-            LOG_DEBUG("TINFOIL using cached private key: %s\n", keyPath.c_str());
-
-            std::array<unsigned char, 16> aesKey{};
-            std::array<unsigned char, kTinfoilWrappedKeySize> wrappedKey{};
-            std::memcpy(wrappedKey.data(), body.data() + 0x8, wrappedKey.size());
-
-            mbedtls_ctr_drbg_context ctrDrbg;
-            mbedtls_entropy_context entropy;
-            mbedtls_ctr_drbg_init(&ctrDrbg);
-            mbedtls_entropy_init(&entropy);
-
-            int rc = mbedtls_ctr_drbg_seed(&ctrDrbg, mbedtls_entropy_func, &entropy,
-                reinterpret_cast<const unsigned char*>("CyberFoilTinfoil"), 17);
-            if (rc != 0)
-                LOG_DEBUG("TINFOIL key parse/seed failed rc=%d\n", rc);
-
-            unsigned char unwrapped[256] = {};
-            std::size_t unwrappedSize = 0;
-            if (rc == 0) {
-                if (!mbedtls_pk_can_do(&pk, MBEDTLS_PK_RSA))
-                    rc = MBEDTLS_ERR_PK_TYPE_MISMATCH;
-            }
-            if (rc == MBEDTLS_ERR_PK_TYPE_MISMATCH)
-                LOG_DEBUG("TINFOIL decode failed: private key is not RSA\n");
-            if (rc == 0) {
-                mbedtls_rsa_context* rsa = mbedtls_pk_rsa(pk);
-                LOG_DEBUG("TINFOIL OAEP attempt SHA1\n");
-                mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA1);
-                rc = mbedtls_rsa_rsaes_oaep_decrypt(rsa, mbedtls_ctr_drbg_random, &ctrDrbg,
-                    MBEDTLS_RSA_PRIVATE, nullptr, 0, &unwrappedSize, wrappedKey.data(), unwrapped, sizeof(unwrapped));
-                if (rc != 0) {
-                    LOG_DEBUG("TINFOIL OAEP SHA1 failed rc=%d\n", rc);
-                    unwrappedSize = 0;
-                    LOG_DEBUG("TINFOIL OAEP attempt SHA256\n");
-                    mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
-                    rc = mbedtls_rsa_rsaes_oaep_decrypt(rsa, mbedtls_ctr_drbg_random, &ctrDrbg,
-                        MBEDTLS_RSA_PRIVATE, nullptr, 0, &unwrappedSize, wrappedKey.data(), unwrapped, sizeof(unwrapped));
-                    if (rc != 0)
-                        LOG_DEBUG("TINFOIL OAEP SHA256 failed rc=%d\n", rc);
-                }
-            }
-
-            if (rc != 0 || unwrappedSize != aesKey.size()) {
-                LOG_DEBUG("TINFOIL unwrap failed rc=%d unwrapped_size=%zu expected=%zu\n", rc, unwrappedSize, aesKey.size());
-                mbedtls_pk_free(&pk);
-                mbedtls_ctr_drbg_free(&ctrDrbg);
-                mbedtls_entropy_free(&entropy);
-                error = "Failed to decrypt encrypted shop response with private key " + keyPath + ".";
-                return false;
-            }
-
-            std::memcpy(aesKey.data(), unwrapped, aesKey.size());
-            LOG_DEBUG("TINFOIL unwrap succeeded: session key size=%zu\n", unwrappedSize);
-            mbedtls_pk_free(&pk);
-            mbedtls_ctr_drbg_free(&ctrDrbg);
-            mbedtls_entropy_free(&entropy);
-
-            if ((payload.size() % aesKey.size()) != 0) {
-                LOG_DEBUG("TINFOIL AES failed: payload size %zu is not block aligned to %zu\n", payload.size(), aesKey.size());
-                error = "Encrypted shop payload is not AES block aligned.";
-                return false;
-            }
-
-            mbedtls_aes_context aes;
-            mbedtls_aes_init(&aes);
-            rc = mbedtls_aes_setkey_dec(&aes, aesKey.data(), 128);
-            if (rc != 0) {
-                LOG_DEBUG("TINFOIL AES init failed rc=%d\n", rc);
-                mbedtls_aes_free(&aes);
-                error = "Failed to initialize AES decryption.";
-                return false;
-            }
-
-            for (std::size_t offset = 0; offset < payload.size(); offset += aesKey.size())
-                mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, payload.data() + offset, payload.data() + offset);
-            mbedtls_aes_free(&aes);
-            LOG_DEBUG("TINFOIL AES decrypt complete: %zu bytes\n", payload.size());
-            LogPayloadPrefix("TINFOIL decrypted payload", payload);
-        }
-
-        switch (compression) {
-            case 0x00:
-                if (payload.size() < plainSize) {
-                    LOG_DEBUG("TINFOIL plain payload too short: actual=%zu expected=%zu\n", payload.size(), plainSize);
-                    error = "Encrypted shop payload is shorter than expected.";
-                    return false;
-                }
-                outPlain.assign(reinterpret_cast<const char*>(payload.data()), plainSize);
-                LOG_DEBUG("TINFOIL decode success: uncompressed output=%zu source=%zu\n", outPlain.size(), payload.size());
-                return true;
-            case kTinfoilCompressionZlib:
-                if (DecompressZlibBuffer(payload, outPlain)) {
-                    LOG_DEBUG("TINFOIL decode success: zlib output=%zu source=%zu header_plain_size=%zu\n",
-                        outPlain.size(), payload.size(), plainSize);
-                    return true;
-                }
-                LOG_DEBUG("TINFOIL zlib decompress failed: input=%zu expected_output=%zu\n", payload.size(), plainSize);
-                error = "Failed to decompress zlib-compressed TINFOIL payload.";
-                return false;
-            case kTinfoilCompressionZstd:
-                if (payload.size() >= 4) {
-                    const std::uint32_t magic =
-                        static_cast<std::uint32_t>(payload[0]) |
-                        (static_cast<std::uint32_t>(payload[1]) << 8) |
-                        (static_cast<std::uint32_t>(payload[2]) << 16) |
-                        (static_cast<std::uint32_t>(payload[3]) << 24);
-                    LOG_DEBUG("TINFOIL zstd magic=0x%08x\n", magic);
-                } else {
-                    LOG_DEBUG("TINFOIL zstd payload too short for magic (%zu bytes)\n", payload.size());
-                }
-                if (DecompressZstdBuffer(payload, outPlain)) {
-                    LOG_DEBUG("TINFOIL decode success: zstd output=%zu source=%zu header_plain_size=%zu\n",
-                        outPlain.size(), payload.size(), plainSize);
-                    return true;
-                }
-                LOG_DEBUG("TINFOIL zstd decompress failed: input=%zu expected_output=%zu\n", payload.size(), plainSize);
-                error = "Failed to decompress zstd-compressed TINFOIL payload.";
-                return false;
-            default:
-                LOG_DEBUG("TINFOIL decode failed: unsupported compression flag 0x%02x\n", compression);
-                error = "Unsupported TINFOIL compression flag.";
-                return false;
-        }
     }
 
     std::string NormalizeShopUrl(std::string url)
@@ -518,7 +131,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl, const std::string& user, const std::string& pass)
+    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -528,7 +141,6 @@ namespace {
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
         std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
-        std::string uauthHeader = "UAUTH: " + inst::util::ComputeUauthFromUrl(requestUrl, user, pass);
         std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
         return {
             themeHeader,
@@ -537,7 +149,7 @@ namespace {
             revisionHeader,
             languageHeader,
             hauthHeader,
-            uauthHeader
+            "UAUTH: 0"
         };
     }
 
@@ -552,25 +164,13 @@ namespace {
     {
         try {
             tin::network::HTTPDownload download(url);
-            auto tryReadMagicAt = [&](size_t offset, u32& outMagic) -> bool {
-                outMagic = 0;
-                size_t sizeRead = 0;
-                auto streamFunc = [&](u8* streamBuf, size_t streamBufSize) -> size_t {
-                    const size_t remaining = sizeof(outMagic) - sizeRead;
-                    const size_t chunkSize = std::min(streamBufSize, remaining);
-                    std::memcpy(reinterpret_cast<u8*>(&outMagic) + sizeRead, streamBuf, chunkSize);
-                    sizeRead += chunkSize;
-                    return chunkSize;
-                };
-
-                const int rc = download.StreamDataRange(offset, sizeof(outMagic), streamFunc);
-                return rc == 0 && sizeRead == sizeof(outMagic);
-            };
-
             u32 magic = 0;
-            if (tryReadMagicAt(0xF000, magic) && magic == 0x30534648)
+            download.BufferDataRange(&magic, 0xF000, sizeof(magic), nullptr);
+            if (magic == 0x30534648)
                 return true;
-            return tryReadMagicAt(0x10000, magic) && magic == 0x30534648;
+            magic = 0;
+            download.BufferDataRange(&magic, 0x10000, sizeof(magic), nullptr);
+            return magic == 0x30534648;
         } catch (...) {
             return false;
         }
@@ -673,6 +273,56 @@ namespace {
             inst::ui::instPage::setInstallIcon(filePath);
         else
             inst::ui::instPage::clearInstallIcon();
+    }
+
+    constexpr int kShopCacheTtlSeconds = 300;
+
+    std::string GetShopCachePath(const std::string& baseUrl)
+    {
+        std::size_t hash = std::hash<std::string>{}(baseUrl);
+        return inst::config::appDir + "/shop_cache_" + std::to_string(hash) + ".json";
+    }
+
+    bool LoadShopCache(const std::string& baseUrl, std::string& body, bool& fresh)
+    {
+        fresh = false;
+        std::string path = GetShopCachePath(baseUrl);
+        if (!std::filesystem::exists(path))
+            return false;
+
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            return false;
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        body = ss.str();
+        if (body.empty())
+            return false;
+
+        auto ftime = std::filesystem::last_write_time(path);
+        auto now = std::chrono::system_clock::now();
+        auto ftime_sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            ftime - std::filesystem::file_time_type::clock::now() + now);
+        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime_sys).count();
+        fresh = age >= 0 && age <= kShopCacheTtlSeconds;
+        return true;
+    }
+
+    void SaveShopCache(const std::string& baseUrl, const std::string& body)
+    {
+        if (body.empty())
+            return;
+        std::string path = GetShopCachePath(baseUrl);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out)
+            return;
+        out << body;
+    }
+
+    std::string GetShopPrefetchMarker(const std::string& baseUrl)
+    {
+        std::size_t hash = std::hash<std::string>{}(baseUrl);
+        return inst::config::appDir + "/shop_icons_prefetch_" + std::to_string(hash) + ".done";
     }
 
     bool TryParseTitleId(const nlohmann::json& entry, std::uint64_t& out);
@@ -1398,7 +1048,7 @@ namespace shopInstStuff {
         }
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildTinfoilHeaders(url, user, pass);
+        const auto headers = BuildTinfoilHeaders(url);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -1450,230 +1100,11 @@ namespace shopInstStuff {
             error = "eShop returned the login page. Check shop URL, username, and password, or enable public shop.";
             return false;
         }
+        if (fetch.body.rfind("TINFOIL", 0) == 0) {
+            error = "inst.shop.encrypted_unsupported"_lang;
+            return false;
+        }
         return true;
-    }
-
-    namespace {
-        bool AppendLegacyFilesFromJson(const nlohmann::json& files, const std::string& baseUrl,
-            std::vector<ShopItem>& items, std::unordered_set<std::string>& seenItemUrls)
-        {
-            if (!files.is_array())
-                return false;
-
-            for (const auto& entry : files) {
-                if (!entry.is_object() || !entry.contains("url"))
-                    continue;
-
-                std::string url = entry["url"].get<std::string>();
-                std::uint64_t size = 0;
-                if (entry.contains("size") && entry["size"].is_number())
-                    size = entry["size"].get<std::uint64_t>();
-
-                std::string fragment;
-                std::string urlPath = url;
-                auto hashPos = urlPath.find('#');
-                if (hashPos != std::string::npos) {
-                    fragment = urlPath.substr(hashPos + 1);
-                    urlPath = urlPath.substr(0, hashPos);
-                }
-
-                const std::string fullUrl = BuildFullUrl(baseUrl, urlPath);
-                std::string name;
-                if (!fragment.empty())
-                    name = DecodeUrlSegment(fragment);
-                else
-                    name = inst::util::formatUrlString(fullUrl);
-
-                if (fullUrl.empty() || name.empty())
-                    continue;
-                if (!seenItemUrls.insert(fullUrl).second)
-                    continue;
-
-                ShopItem item;
-                item.name = name;
-                item.url = fullUrl;
-                item.size = size;
-                ApplyLegacyMetadataFromName(name, item);
-
-                std::uint32_t releaseDate = 0;
-                if (TryParseReleaseDate(entry, releaseDate)) {
-                    item.releaseDate = releaseDate;
-                    item.hasReleaseDate = true;
-                }
-
-                if (entry.contains("icon_url") && entry["icon_url"].is_string()) {
-                    std::string iconUrl = entry["icon_url"].get<std::string>();
-                    if (!iconUrl.empty()) {
-                        item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
-                        item.hasIconUrl = true;
-                    }
-                } else if (entry.contains("iconUrl") && entry["iconUrl"].is_string()) {
-                    std::string iconUrl = entry["iconUrl"].get<std::string>();
-                    if (!iconUrl.empty()) {
-                        item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
-                        item.hasIconUrl = true;
-                    }
-                }
-
-                if (entry.contains("save_id") && entry["save_id"].is_string())
-                    item.saveId = entry["save_id"].get<std::string>();
-                else if (entry.contains("saveId") && entry["saveId"].is_string())
-                    item.saveId = entry["saveId"].get<std::string>();
-
-                if (entry.contains("note") && entry["note"].is_string())
-                    item.saveNote = entry["note"].get<std::string>();
-                else if (entry.contains("save_note") && entry["save_note"].is_string())
-                    item.saveNote = entry["save_note"].get<std::string>();
-                else if (entry.contains("saveNote") && entry["saveNote"].is_string())
-                    item.saveNote = entry["saveNote"].get<std::string>();
-
-                if (entry.contains("created_at") && entry["created_at"].is_string())
-                    item.saveCreatedAt = entry["created_at"].get<std::string>();
-                else if (entry.contains("createdAt") && entry["createdAt"].is_string())
-                    item.saveCreatedAt = entry["createdAt"].get<std::string>();
-
-                if (entry.contains("created_ts")) {
-                    if (entry["created_ts"].is_number_unsigned())
-                        item.saveCreatedTs = entry["created_ts"].get<std::uint64_t>();
-                    else if (entry["created_ts"].is_number_integer()) {
-                        const auto parsedCreatedTs = entry["created_ts"].get<long long>();
-                        if (parsedCreatedTs > 0)
-                            item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
-                    }
-                } else if (entry.contains("createdTs")) {
-                    if (entry["createdTs"].is_number_unsigned())
-                        item.saveCreatedTs = entry["createdTs"].get<std::uint64_t>();
-                    else if (entry["createdTs"].is_number_integer()) {
-                        const auto parsedCreatedTs = entry["createdTs"].get<long long>();
-                        if (parsedCreatedTs > 0)
-                            item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
-                    }
-                }
-
-                if (!item.hasIconUrl) {
-                    std::uint64_t baseTitleId = 0;
-                    if (TryResolveBaseTitleId(item, baseTitleId) && baseTitleId != 0) {
-                        item.iconUrl = BuildFullUrl(baseUrl, "/api/shop/icon/" + FormatTitleIdHexUpper(baseTitleId));
-                        item.hasIconUrl = true;
-                    }
-                }
-
-                items.push_back(std::move(item));
-            }
-
-            return true;
-        }
-
-        std::string GetDirectoryEntryUrl(const nlohmann::json& entry)
-        {
-            if (entry.is_string())
-                return entry.get<std::string>();
-            if (!entry.is_object())
-                return "";
-
-            static const std::array<const char*, 5> candidates = {
-                "url",
-                "path",
-                "directory",
-                "href",
-                "location"
-            };
-
-            for (const char* key : candidates) {
-                if (entry.contains(key) && entry[key].is_string())
-                    return entry[key].get<std::string>();
-            }
-            return "";
-        }
-
-        bool CollectShopItemsFromJson(const nlohmann::json& shop, const std::string& baseUrl,
-            const std::string& user, const std::string& pass, std::vector<ShopItem>& items,
-            std::unordered_set<std::string>& seenItemUrls, std::unordered_set<std::string>& seenManifestUrls,
-            std::string& error, const ShopFetchProgressCallback& progressCb)
-        {
-            if (!shop.is_object()) {
-                error = "Invalid shop response.";
-                return false;
-            }
-
-            if (shop.contains("error") && shop["error"].is_string()) {
-                error = shop["error"].get<std::string>();
-                return false;
-            }
-
-            bool handled = false;
-
-            if (shop.contains("sections") && shop["sections"].is_array()) {
-                std::vector<ShopSection> parsedSections = ParseShopSectionsBody(shop.dump(), baseUrl, error);
-                if (parsedSections.empty()) {
-                    if (error.empty())
-                        error = "Shop response missing file list.";
-                    return false;
-                }
-
-                for (const auto& section : parsedSections) {
-                    for (const auto& sectionItem : section.items) {
-                        if (!seenItemUrls.insert(sectionItem.url).second)
-                            continue;
-                        items.push_back(sectionItem);
-                    }
-                }
-                handled = true;
-            }
-
-            if (shop.contains("files") && shop["files"].is_array()) {
-                AppendLegacyFilesFromJson(shop["files"], baseUrl, items, seenItemUrls);
-                handled = true;
-            }
-
-            if (shop.contains("directories") && shop["directories"].is_array()) {
-                handled = true;
-                for (const auto& directoryEntry : shop["directories"]) {
-                    const std::string directoryPath = GetDirectoryEntryUrl(directoryEntry);
-                    if (directoryPath.empty())
-                        continue;
-
-                    const std::string directoryUrl = BuildFullUrl(baseUrl, directoryPath);
-                    if (directoryUrl.empty())
-                        continue;
-                    if (!seenManifestUrls.insert(directoryUrl).second)
-                        continue;
-
-                    LOG_DEBUG("FetchShop following directory manifest: %s\n", directoryUrl.c_str());
-
-                    FetchResult directoryFetch = FetchShopResponse(directoryUrl, user, pass, progressCb);
-                    if (!ValidateShopResponse(directoryFetch, error))
-                        return false;
-
-                    std::string decodedBody;
-                    if (!TryDecodeTinfoilIndex(directoryFetch.body, decodedBody, error))
-                        return false;
-                    if (IsTinfoilIndex(directoryFetch.body))
-                        directoryFetch.body = std::move(decodedBody);
-
-                    LogJsonPreview("FetchShop directory body", directoryFetch.body);
-
-                    nlohmann::json directoryJson;
-                    try {
-                        directoryJson = nlohmann::json::parse(directoryFetch.body);
-                    } catch (...) {
-                        error = "Invalid shop response.";
-                        return false;
-                    }
-
-                    LogJsonTopLevelKeys("FetchShop directory body", directoryJson);
-                    if (!CollectShopItemsFromJson(directoryJson, baseUrl, user, pass, items, seenItemUrls, seenManifestUrls, error, progressCb))
-                        return false;
-                }
-            }
-
-            if (!handled) {
-                error = "Shop response missing file list.";
-                return false;
-            }
-
-            return true;
-        }
     }
 
     std::vector<ShopItem> FetchShop(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, const ShopFetchProgressCallback& progressCb)
@@ -1691,21 +1122,117 @@ namespace shopInstStuff {
         if (!ValidateShopResponse(fetch, error))
             return items;
 
-        std::string decodedBody;
-        if (!TryDecodeTinfoilIndex(fetch.body, decodedBody, error))
-            return items;
-        if (IsTinfoilIndex(fetch.body))
-            fetch.body = std::move(decodedBody);
-
         try {
             nlohmann::json shop = nlohmann::json::parse(fetch.body);
-            LogJsonPreview("FetchShop decoded body", fetch.body);
-            LogJsonTopLevelKeys("FetchShop decoded body", shop);
-            std::unordered_set<std::string> seenItemUrls;
-            std::unordered_set<std::string> seenManifestUrls;
-            seenManifestUrls.insert(baseUrl);
-            if (!CollectShopItemsFromJson(shop, baseUrl, user, pass, items, seenItemUrls, seenManifestUrls, error, progressCb))
+            if (shop.contains("error")) {
+                error = shop["error"].get<std::string>();
                 return items;
+            }
+            if (!shop.contains("files") || !shop["files"].is_array()) {
+                error = "Shop response missing file list.";
+                return items;
+            }
+
+            for (const auto& entry : shop["files"]) {
+                if (!entry.contains("url"))
+                    continue;
+                std::string url = entry["url"].get<std::string>();
+                std::uint64_t size = 0;
+                if (entry.contains("size") && entry["size"].is_number()) {
+                    size = entry["size"].get<std::uint64_t>();
+                }
+
+                std::string fragment;
+                std::string urlPath = url;
+                auto hashPos = urlPath.find('#');
+                if (hashPos != std::string::npos) {
+                    fragment = urlPath.substr(hashPos + 1);
+                    urlPath = urlPath.substr(0, hashPos);
+                }
+
+                std::string fullUrl;
+                if (urlPath.rfind("http://", 0) == 0 || urlPath.rfind("https://", 0) == 0)
+                    fullUrl = urlPath;
+                else if (!urlPath.empty() && urlPath[0] == '/')
+                    fullUrl = baseUrl + urlPath;
+                else
+                    fullUrl = baseUrl + "/" + urlPath;
+
+                std::string name;
+                if (!fragment.empty())
+                    name = DecodeUrlSegment(fragment);
+                else {
+                    name = inst::util::formatUrlString(fullUrl);
+                }
+
+                if (!fullUrl.empty() && !name.empty()) {
+                    ShopItem item;
+                    item.name = name;
+                    item.url = fullUrl;
+                    item.size = size;
+                    ApplyLegacyMetadataFromName(name, item);
+                    std::uint32_t releaseDate = 0;
+                    if (TryParseReleaseDate(entry, releaseDate)) {
+                        item.releaseDate = releaseDate;
+                        item.hasReleaseDate = true;
+                    }
+
+                    if (entry.contains("icon_url") && entry["icon_url"].is_string()) {
+                        std::string iconUrl = entry["icon_url"].get<std::string>();
+                        if (!iconUrl.empty()) {
+                            item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
+                            item.hasIconUrl = true;
+                        }
+                    } else if (entry.contains("iconUrl") && entry["iconUrl"].is_string()) {
+                        std::string iconUrl = entry["iconUrl"].get<std::string>();
+                        if (!iconUrl.empty()) {
+                            item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
+                            item.hasIconUrl = true;
+                        }
+                    }
+                    if (entry.contains("save_id") && entry["save_id"].is_string())
+                        item.saveId = entry["save_id"].get<std::string>();
+                    else if (entry.contains("saveId") && entry["saveId"].is_string())
+                        item.saveId = entry["saveId"].get<std::string>();
+                    if (entry.contains("note") && entry["note"].is_string())
+                        item.saveNote = entry["note"].get<std::string>();
+                    else if (entry.contains("save_note") && entry["save_note"].is_string())
+                        item.saveNote = entry["save_note"].get<std::string>();
+                    else if (entry.contains("saveNote") && entry["saveNote"].is_string())
+                        item.saveNote = entry["saveNote"].get<std::string>();
+                    if (entry.contains("created_at") && entry["created_at"].is_string())
+                        item.saveCreatedAt = entry["created_at"].get<std::string>();
+                    else if (entry.contains("createdAt") && entry["createdAt"].is_string())
+                        item.saveCreatedAt = entry["createdAt"].get<std::string>();
+                    if (entry.contains("created_ts")) {
+                        if (entry["created_ts"].is_number_unsigned())
+                            item.saveCreatedTs = entry["created_ts"].get<std::uint64_t>();
+                        else if (entry["created_ts"].is_number_integer()) {
+                            const auto parsedCreatedTs = entry["created_ts"].get<long long>();
+                            if (parsedCreatedTs > 0)
+                                item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
+                        }
+                    } else if (entry.contains("createdTs")) {
+                        if (entry["createdTs"].is_number_unsigned())
+                            item.saveCreatedTs = entry["createdTs"].get<std::uint64_t>();
+                        else if (entry["createdTs"].is_number_integer()) {
+                            const auto parsedCreatedTs = entry["createdTs"].get<long long>();
+                            if (parsedCreatedTs > 0)
+                                item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
+                        }
+                    }
+
+                    if (!item.hasIconUrl) {
+                        std::uint64_t baseTitleId = 0;
+                        if (TryResolveBaseTitleId(item, baseTitleId) && baseTitleId != 0) {
+                            item.iconUrl = BuildFullUrl(baseUrl, "/api/shop/icon/" + FormatTitleIdHexUpper(baseTitleId));
+                            item.hasIconUrl = true;
+                        }
+                    }
+
+                    items.push_back(item);
+                }
+            }
         }
         catch (...) {
             error = "Invalid shop response.";
@@ -1718,7 +1245,7 @@ namespace shopInstStuff {
         return items;
     }
 
-    std::vector<ShopSection> FetchShopSections(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, bool* outUsedLegacyFallback, const ShopFetchProgressCallback& progressCb)
+    std::vector<ShopSection> FetchShopSections(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, bool allowCache, bool* outUsedLegacyFallback, const ShopFetchProgressCallback& progressCb)
     {
         std::vector<ShopSection> sections;
         error.clear();
@@ -1729,6 +1256,19 @@ namespace shopInstStuff {
         if (baseUrl.empty()) {
             error = "Shop URL is empty.";
             return sections;
+        }
+
+        if (allowCache) {
+            std::string cachedBody;
+            bool fresh = false;
+            if (LoadShopCache(baseUrl, cachedBody, fresh) && fresh) {
+                std::string cacheError;
+                sections = ParseShopSectionsBody(cachedBody, baseUrl, cacheError);
+                if (!sections.empty()) {
+                    error.clear();
+                    return sections;
+                }
+            }
         }
 
         auto tryLegacyFallback = [&]() -> bool {
@@ -1761,30 +1301,45 @@ namespace shopInstStuff {
             }
             if (tryLegacyFallback())
                 return sections;
+            if (allowCache) {
+                std::string cachedBody;
+                bool fresh = false;
+                if (LoadShopCache(baseUrl, cachedBody, fresh)) {
+                    std::string cacheError;
+                    sections = ParseShopSectionsBody(cachedBody, baseUrl, cacheError);
+                    if (!sections.empty()) {
+                        error.clear();
+                        return sections;
+                    }
+                }
+            }
             return sections;
-        }
-
-        std::string decodedBody;
-        if (!TryDecodeTinfoilIndex(fetch.body, decodedBody, error)) {
-            if (tryLegacyFallback())
-                return sections;
-            return sections;
-        }
-        if (IsTinfoilIndex(fetch.body))
-            fetch.body = std::move(decodedBody);
-
-        LogJsonPreview("FetchShopSections decoded body", fetch.body);
-        try {
-            const nlohmann::json parsed = nlohmann::json::parse(fetch.body);
-            LogJsonTopLevelKeys("FetchShopSections decoded body", parsed);
-        } catch (...) {
-            LOG_DEBUG("FetchShopSections decoded body is not valid JSON for top-level key logging\n");
         }
 
         sections = ParseShopSectionsBody(fetch.body, baseUrl, error);
         if (sections.empty() && !error.empty() && tryLegacyFallback())
             return sections;
+        if (!sections.empty())
+            SaveShopCache(baseUrl, fetch.body);
         return sections;
+    }
+
+    void ResetShopIconCache(const std::string& shopUrl)
+    {
+        std::string baseUrl = NormalizeShopUrl(shopUrl);
+        if (baseUrl.empty())
+            return;
+        std::string marker = GetShopPrefetchMarker(baseUrl);
+        std::error_code ec;
+        if (std::filesystem::exists(marker, ec))
+            std::filesystem::remove(marker, ec);
+        std::string cacheDir = inst::config::appDir + "/shop_icons";
+        if (std::filesystem::exists(cacheDir, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
+                if (entry.is_regular_file())
+                    std::filesystem::remove(entry.path(), ec);
+            }
+        }
     }
 
     namespace {
@@ -2160,12 +1715,8 @@ namespace shopInstStuff {
             return "";
         if (!fetch.error.empty())
             return "";
-        std::string decodedBody;
-        std::string decodeError;
-        if (!TryDecodeTinfoilIndex(fetch.body, decodedBody, decodeError))
+        if (fetch.body.rfind("TINFOIL", 0) == 0)
             return "";
-        if (IsTinfoilIndex(fetch.body))
-            fetch.body = std::move(decodedBody);
 
         try {
             nlohmann::json shop = nlohmann::json::parse(fetch.body);

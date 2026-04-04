@@ -25,7 +25,6 @@ SOFTWARE.
 #include <cstring>
 #include <stdexcept>
 #include <cstdio>
-#include "util/debug.h"
 
 #define ASSERT_OK(res_expr, desc) \
     ({ \
@@ -44,8 +43,8 @@ SOFTWARE.
     })
 
 
-#ifdef APP_DEBUG_LOG
-#define LOG_DEBUG(format, ...) { debugLogWrite(__func__, __LINE__, format, ##__VA_ARGS__); }
+#ifdef NXLINK_DEBUG
+#define LOG_DEBUG(format, ...) { std::printf("%s:%u: ", __func__, __LINE__); std::printf(format, ##__VA_ARGS__); }
 #else
 #define LOG_DEBUG(format, ...) ;
 #endif

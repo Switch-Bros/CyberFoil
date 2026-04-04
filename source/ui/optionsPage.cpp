@@ -191,8 +191,6 @@ namespace inst::ui {
                 return "Chrome (Windows)";
             if (normalized == "safari")
                 return "Safari (iPhone)";
-            if (normalized == "tinfoil")
-                return "Tinfoil";
             if (normalized == "firefox")
                 return "Firefox (Windows)";
             if (normalized == "custom")
@@ -203,30 +201,26 @@ namespace inst::ui {
         int GetUserAgentProfileChoiceIndex(const std::string& mode)
         {
             const std::string normalized = inst::config::NormalizeHttpUserAgentMode(mode);
-            if (normalized == "tinfoil")
-                return 1;
             if (normalized == "chrome")
-                return 2;
+                return 1;
             if (normalized == "safari")
-                return 3;
+                return 2;
             if (normalized == "firefox")
-                return 4;
+                return 3;
             if (normalized == "custom")
-                return 5;
+                return 4;
             return 0;
         }
 
         std::string GetUserAgentProfileModeFromChoice(int choice)
         {
             if (choice == 1)
-                return "tinfoil";
-            if (choice == 2)
                 return "chrome";
-            if (choice == 3)
+            if (choice == 2)
                 return "safari";
-            if (choice == 4)
+            if (choice == 3)
                 return "firefox";
-            if (choice == 5)
+            if (choice == 4)
                 return "custom";
             return "default";
         }
@@ -565,6 +559,7 @@ namespace inst::ui {
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
             addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
             addItem("options.menu_items.shop_start_grid_mode"_lang, true, inst::config::shopStartGridMode);
+            addItem("options.menu_items.shop_reset_icons"_lang, false, false);
             addItem("Offline DB auto-check on startup", true, inst::config::offlineDbAutoCheckOnStartup);
             addItem("Offline DB update (" + dbVersion + ")", false, false);
             return;
@@ -766,7 +761,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 14, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
@@ -983,7 +978,6 @@ namespace inst::ui {
                 case 25: {
                     const std::vector<std::string> profiles = {
                         "Default (CyberFoil)",
-                        "Tinfoil",
                         "Chrome (Windows)",
                         "Safari (iPhone)",
                         "Firefox (Windows)",
@@ -1003,9 +997,7 @@ namespace inst::ui {
                         break;
 
                     std::string mode = GetUserAgentProfileModeFromChoice(profileChoice);
-                    if (mode == "tinfoil") {
-                        inst::config::httpUserAgent.clear();
-                    } else if (mode == "custom") {
+                    if (mode == "custom") {
                         std::string customUserAgent = TrimString(inst::util::softwareKeyboard("Enter custom User-Agent", inst::config::httpUserAgent, 300));
                         if (customUserAgent.empty()) {
                             inst::ui::mainApp->CreateShowDialog("Invalid User-Agent", "Custom User-Agent cannot be empty.", {"common.ok"_lang}, true);
@@ -1043,6 +1035,14 @@ namespace inst::ui {
                     inst::config::shopAllBaseOnly = !inst::config::shopAllBaseOnly;
                     inst::config::setConfig();
                     this->refreshOptions();
+                    break;
+                case 14:
+                    if (!inst::config::shopUrl.empty()) {
+                        int confirm = inst::ui::mainApp->CreateShowDialog("options.cache_reset.title"_lang, "options.cache_reset.desc"_lang, {"options.cache_reset.confirm"_lang, "common.cancel"_lang}, false);
+                        if (confirm == 0) {
+                            shopInstStuff::ResetShopIconCache(inst::config::shopUrl);
+                        }
+                    }
                     break;
                 case 23:
                     inst::config::offlineDbAutoCheckOnStartup = !inst::config::offlineDbAutoCheckOnStartup;

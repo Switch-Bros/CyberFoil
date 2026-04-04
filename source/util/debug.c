@@ -22,67 +22,32 @@ SOFTWARE.
 
 #include "util/debug.h"
 
-#include <stdarg.h>
-#include <stdbool.h>
 #include <string.h>
 
-static const char* kDebugLogPath = "sdmc:/switch/CyberFoil/tinfoil_debug.log";
-
-void debugLogReset(void)
-{
-#ifdef APP_DEBUG_LOG
-    FILE* f = fopen(kDebugLogPath, "w");
-    if (f != NULL) {
-        fclose(f);
-    }
-#endif
-}
-
-void debugLogWrite(const char* func, unsigned int line, const char* format, ...)
-{
-#ifdef APP_DEBUG_LOG
-    FILE* f = fopen(kDebugLogPath, "a");
-    if (f == NULL)
-        return;
-
-    if (func != NULL)
-        fprintf(f, "%s:%u: ", func, line);
-
-    va_list args;
-    va_start(args, format);
-    vfprintf(f, format, args);
-    va_end(args);
-    fclose(f);
-#else
-    (void)func;
-    (void)line;
-    (void)format;
-#endif
-}
+#include <sys/socket.h>
+#include <sys/errno.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 void printBytes(u8 *bytes, size_t size, bool includeHeader)
 {
-#ifdef APP_DEBUG_LOG
+#ifdef NXLINK_DEBUG
     int count = 0;
-    FILE* f = fopen(kDebugLogPath, "a");
-    if (f == NULL)
-        return;
 
     if (includeHeader)
     {
-        fprintf(f, "\n\n00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F\n");
-        fprintf(f, "-----------------------------------------------\n");
+        printf("\n\n00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F\n");
+        printf("-----------------------------------------------\n");
     }
 
     for (int i = 0; i < size; i++)
     {
-        fprintf(f, "%02x ", bytes[i]);
+        printf("%02x ", bytes[i]);
         count++;
         if ((count % 16) == 0)
-            fprintf(f, "\n");
+            printf("\n");
     }
 
-    fprintf(f, "\n");
-    fclose(f);
+    printf("\n");
 #endif
 }

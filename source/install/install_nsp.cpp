@@ -84,8 +84,10 @@ namespace tin::install::nsp
         const PFS0FileEntry* fileEntry = m_NSP->GetFileEntryByNcaId(ncaId);
         std::string ncaFileName = m_NSP->GetFileEntryName(fileEntry);
 
+        #ifdef NXLINK_DEBUG
         size_t ncaSize = fileEntry->fileSize;
         LOG_DEBUG("Installing %s to storage Id %u\n", ncaFileName.c_str(), m_destStorageId);
+        #endif
 
         std::shared_ptr<nx::ncm::ContentStorage> contentStorage(new nx::ncm::ContentStorage(m_destStorageId));
 
