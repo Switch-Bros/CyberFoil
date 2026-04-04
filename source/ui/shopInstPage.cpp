@@ -97,6 +97,19 @@ namespace {
 
     bool TryParseHexU64(const std::string& hex, std::uint64_t& out);
 
+    int ComputeListNameLimit(const std::string& suffix)
+    {
+        int nameLimit = 56;
+        if (!suffix.empty()) {
+            int maxSuffix = static_cast<int>(suffix.size()) + 1;
+            if (nameLimit > maxSuffix)
+                nameLimit -= maxSuffix;
+        }
+        if (nameLimit < 8)
+            nameLimit = 8;
+        return nameLimit;
+    }
+
     pu::ui::Color BlendOverOpaque(const pu::ui::Color& base, const pu::ui::Color& overlay)
     {
         const int a = static_cast<int>(overlay.A);
@@ -1368,22 +1381,8 @@ namespace inst::ui {
         const std::string normalizedName = OverflowText::NormalizeSingleLineText(item.name);
         std::string sizeText = FormatSizeText(item.size);
         std::string suffix = sizeText.empty() ? "" : (" [" + sizeText + "]");
-        std::string label = normalizedName + suffix;
-
-        if (this->menu == nullptr)
-            return label;
-
-        int textX = 0;
-        int maxMenuLabelWidth = 0;
-        this->getListTextBounds(textX, maxMenuLabelWidth);
-        (void)textX;
-        if (maxMenuLabelWidth <= 0)
-            return label;
-        const int maxMenuLabelHeight = this->menu->GetItemSize() - 2;
-        constexpr int kShopListMenuFontSize = 22;
-        label = ClipSingleLinePrefixSuffixByMenuRender(
-            normalizedName, suffix, kShopListMenuFontSize, maxMenuLabelWidth, maxMenuLabelHeight, nullptr);
-        return label;
+        const int nameLimit = ComputeListNameLimit(suffix);
+        return inst::util::shortenString(normalizedName, nameLimit, true) + suffix;
     }
 
     void shopInstPage::updateListMarquee(bool force)
