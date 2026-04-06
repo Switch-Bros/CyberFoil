@@ -3485,10 +3485,7 @@ namespace inst::ui {
             return;
         }
 
-        if (this->menu->GetItems().size() == this->visibleItems.size())
-            this->refreshListSelectionIcons();
-        else
-            this->drawMenuItems(false);
+        this->drawMenuItems(false);
     }
 
     void shopInstPage::updateRememberedSelection() {
@@ -4333,7 +4330,7 @@ namespace inst::ui {
                 if (this->selectedItems.size() == this->menu->GetItems().size()) {
                     this->selectedItems.clear();
                     this->updateRememberedSelection();
-                    this->refreshListSelectionIcons();
+                    this->drawMenuItems(false);
                 } else {
                     std::unordered_set<std::string> selectedUrls;
                     selectedUrls.reserve(this->selectedItems.size());
@@ -4349,7 +4346,7 @@ namespace inst::ui {
                         selectedUrls.insert(item.url);
                     }
                     this->updateRememberedSelection();
-                    this->refreshListSelectionIcons();
+                    this->drawMenuItems(false);
                 }
             }
         }
