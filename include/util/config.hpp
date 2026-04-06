@@ -9,6 +9,16 @@ namespace inst::config {
     static const std::string configPath = appDir + "/config.json";
     static const std::string shopsDir = appDir + "/shops";
     static const std::string appVersion = std::string(APP_VERSION);
+#ifdef APP_GIT_META
+    static const std::string appGitMeta = std::string(APP_GIT_META);
+#else
+    static const std::string appGitMeta = std::string();
+#endif
+#ifdef APP_VERSION_FULL
+    static const std::string appVersionFull = std::string(APP_VERSION_FULL);
+#else
+    static const std::string appVersionFull = std::string(APP_VERSION);
+#endif
 
     extern std::string gAuthKey;
     extern std::string lastNetUrl;

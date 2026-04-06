@@ -271,11 +271,11 @@ namespace inst::ui {
         this->botRect = Rectangle::New(0, 660, 1280, 60, botColor);
         if (inst::config::gayMode) {
             this->titleImage = Image::New(-113, -8, "romfs:/images/logo.png");
-            this->appVersionText = TextBlock::New(367, 29, "v" + inst::config::appVersion, 22);
+            this->appVersionText = TextBlock::New(367, 29, "v" + inst::config::appVersion + (inst::config::appGitMeta.empty() ? "" : ("\n" + inst::config::appGitMeta)), 22);
         }
         else {
             this->titleImage = Image::New(0, -8, "romfs:/images/logo.png");
-            this->appVersionText = TextBlock::New(480, 29, "v" + inst::config::appVersion, 22);
+            this->appVersionText = TextBlock::New(480, 29, "v" + inst::config::appVersion + (inst::config::appGitMeta.empty() ? "" : ("\n" + inst::config::appGitMeta)), 22);
         }
         this->appVersionText->SetColor(COLOR("#FFFFFFFF"));
         this->timeText = TextBlock::New(0, 18, "--:--", 22);
@@ -927,3 +927,4 @@ namespace inst::ui {
             this->activateSelectedMainItem();
     }
 }
+
