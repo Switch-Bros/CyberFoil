@@ -128,6 +128,65 @@ protected:
      NczSectionHeader m_sections[1];
 } NX_PACKED;
 
+// NCZBLOCK header structure
+struct NczBlockHeader {
+     static const u64 NCZBLOCK_MAGIC = 0x4B434F4C425A434E;  // "NCZBLOCK" in little-endian
+     static const u8 TYPE_ZSTD = 0x01;
+
+     bool isValid() const
+     {
+          if (magic != NCZBLOCK_MAGIC)
+          {
+               const auto mbad = reinterpret_cast<const u8*>(&magic);
+               const auto mgood = reinterpret_cast<const u8*>(&NCZBLOCK_MAGIC);
+               LOG_DEBUG("[NczBlockHeader] ERROR: Invalid magic: %02X %02X %02X %02X %02X %02X %02X %02X (must be %02X %02X %02X %02X %02X %02X %02X %02X)",
+                             mbad[0], mbad[1], mbad[2], mbad[3], mbad[4], mbad[5], mbad[6], mbad[7],
+                             mgood[0], mgood[1], mgood[2], mgood[3], mgood[4], mgood[5], mgood[6], mgood[7]);
+               return false;
+          }
+          if (blockSizeExponent < 14 || blockSizeExponent > 32)
+          {
+               LOG_DEBUG("[NczBlockHeader] ERROR: Invalid block size exponent: %u (must be 14-32)", blockSizeExponent);
+               return false;
+          }
+          // Sanity check, not in source documentation for NCZBLOCK
+          if (numberOfBlocks >= 0xFFFF)
+          {
+               LOG_DEBUG("[NczBlockHeader] ERROR: numberOfBlocks %u exceeds sanity limit", numberOfBlocks);
+               return false;
+          }
+          // Not errors, but may lead to unexpected results, so let's warn
+          if (version != 2)
+          {
+               LOG_DEBUG("[NczBlockHeader] WARNING: Unexpected version %u (expected 2)", version);
+          }
+          if (type != TYPE_ZSTD)
+          {
+               LOG_DEBUG("[NczBlockHeader] WARNING: Unexpected compression type %u (expected 1=ZSTD)", type);
+          }
+          return true;
+     }
+
+     u64 blockSize() const
+     {
+          return 1ULL << blockSizeExponent;
+     }
+
+     bool usesZstd() const
+     {
+          return type == TYPE_ZSTD;
+     }
+
+     u64 magic;                  // "NCZBLOCK"
+     u8 version;                 // 0x02
+     u8 type;                    // 0x01 = ZSTD
+     u8 unused;                  // 0x00
+     u8 blockSizeExponent;       // 14-32
+     u32 numberOfBlocks;         // Little-endian
+     u64 decompressedSize;       // Little-endian
+     // Followed by: u32 compressedBlockSizes[numberOfBlocks]
+} NX_PACKED;
+
 // endregion
 
 // region NcaBodyWriter Methods
@@ -347,6 +406,192 @@ private:
      std::unique_ptr<ZSTD_DCtx, ZstdDCtxDeleter> m_dctx;
 };
 
+// NCZBLOCK Stream Writer - handles streaming NCZBLOCK compression
+class NczBlockStreamWriter : public CloseableWriter
+{
+public:
+     NczBlockStreamWriter(const std::function<WriterFn>& writeFn)
+          : m_writeFn(writeFn),
+            m_headerParsed(false), m_blockSizesParsed(false),
+            m_currentBlockIdx(0), m_currentBlockReadOffset(0)
+     {
+          if (!writeFn)
+               THROW_FORMAT("NczBlockStreamWriter: WriterFn callback cannot be null");
+     }
+
+     ~NczBlockStreamWriter() override
+     {
+          NczBlockStreamWriter::close();
+     }
+
+     void close() override
+     {
+          if (isClosed()) return; // Idempotent close
+
+          // Free resources
+          if (m_currentBlockWriter)
+          {
+               m_currentBlockWriter->close(); // Flush remaining data to writerFn
+               m_currentBlockWriter = NULL;
+          }
+          m_writeFn = NULL;
+
+          CloseableWriter::close(); // Mark as closed after all cleanups are done
+     }
+
+     void write(const u8* ptr, u64 sz) override
+     {
+          if (isClosed())
+          {
+               LOG_DEBUG("write() called on closed NczBlockStreamWriter");
+               return;
+          }
+
+          if (!sz) return; // no data
+
+          // Phase 1: Parse and save NCZBLOCK header
+          if (!m_headerParsed)
+          {
+               // Need to buffer the full static header
+               // before we can save a copy of it
+               const u64 header_size = sizeof(NczBlockHeader);
+
+               if (m_buffer.size() < header_size)
+               {
+                    const u64 remainder = std::min(sz, header_size - m_buffer.size());
+                    append(m_buffer, ptr, remainder);
+                    ptr += remainder;
+                    sz -= remainder;
+               }
+
+               if (m_buffer.size() < header_size)
+               {
+                    // assert sz == 0
+                    return; // Need more data
+               }
+
+               // assert m_buffer.size() == header_size
+
+               // Now we can save a copy of the header
+               memcpy(&m_header, m_buffer.data(), header_size);
+               if (!m_header.isValid())
+               {
+                    THROW_FORMAT("NczBlockStreamWriter: invalid NCZBLOCK header");
+               }
+
+               m_headerParsed = true;
+               m_buffer.resize(0);
+          }
+
+          // Phase 2: Parse per-block compressed sizes array
+          if (!m_blockSizesParsed)
+          {
+               // Need to buffer the full sizes array
+               const u64 buffer_size = sizeof(u32) * m_header.numberOfBlocks;
+
+               if (m_buffer.size() < buffer_size)
+               {
+                    const u64 remainder = std::min(sz, buffer_size - m_buffer.size());
+                    append(m_buffer, ptr, remainder);
+                    ptr += remainder;
+                    sz -= remainder;
+               }
+
+               if (m_buffer.size() < buffer_size)
+               {
+                    // assert sz == 0
+                    return; // Need more data
+               }
+
+               // assert m_buffer.size() == buffer_size
+
+               // Read compressed block sizes
+               m_blockSizes.resize(m_header.numberOfBlocks);
+               memcpy(m_blockSizes.data(), m_buffer.data(), m_header.numberOfBlocks * sizeof(u32));
+
+               m_blockSizesParsed = true;
+
+               // All future writes will go directly to output
+               m_buffer.clear(); // reclaim ok
+          }
+
+          // Phase 3: Decompress blocks
+          while (sz)
+          {
+               // Starting a new block?
+               if (!m_currentBlockWriter)
+               {
+                    // Out of blocks?
+                    if (m_currentBlockIdx >= m_header.numberOfBlocks)
+                    {
+                         return;
+                    }
+
+                    m_currentBlockReadOffset = 0;
+
+                    const u64 compressedSize = m_blockSizes[m_currentBlockIdx];
+
+                    u64 expectedDecompSize = m_header.blockSize();
+                    // If last block, adjust expected decompressed to remaining
+                    if (m_currentBlockIdx == m_header.numberOfBlocks - 1)
+                    {
+                         const u64 remainder = m_header.decompressedSize % m_header.blockSize();
+                         if (remainder > 0) expectedDecompSize = remainder;
+                         // TODO Log if expected < compressed ?
+                    }
+
+                    if (m_header.usesZstd())
+                    {
+                         // Even when zstd flagged, if no compression achieved, assume uncompressed
+                         if (compressedSize < expectedDecompSize)
+                         {
+                              m_currentBlockWriter = std::make_unique<ZstdStreamWriter>(m_writeFn);
+                         }
+                         else
+                         {
+                              LOG_DEBUG("[NczBlockStreamWriter] Block (%d) appears to have no compression - Using Direct Writer", m_currentBlockIdx);
+                              m_currentBlockWriter = std::make_unique<DirectStreamWriter>(m_writeFn);
+                         }
+                    }
+                    else
+                    {
+                         LOG_DEBUG("[NczBlockStreamWriter] Block (%d) has Unknown type (%d) - Using Direct Writer", m_currentBlockIdx, m_header.type);
+                         m_currentBlockWriter = std::make_unique<DirectStreamWriter>(m_writeFn);
+                    }
+               }
+
+               const u64 blockSize = m_blockSizes[m_currentBlockIdx];
+               const u64 remaining = std::min(sz, blockSize - m_currentBlockReadOffset);
+
+               m_currentBlockWriter->write(ptr, remaining);
+               m_currentBlockReadOffset += remaining;
+               ptr += remaining;
+               sz -= remaining;
+
+               if (m_currentBlockReadOffset >= blockSize)
+               {
+                    m_currentBlockWriter->close();
+                    m_currentBlockWriter = NULL;
+                    m_currentBlockIdx++;
+               }
+          }
+     }
+
+private:
+     std::function<WriterFn> m_writeFn;
+
+     NczBlockHeader m_header;
+     bool m_headerParsed;
+     bool m_blockSizesParsed;
+     std::vector<u32> m_blockSizes;
+
+     u64 m_currentBlockIdx;
+     u64 m_currentBlockReadOffset;
+     std::unique_ptr<CloseableWriter> m_currentBlockWriter;
+
+     std::vector<u8> m_buffer; // For header + block-sizes parsing phases
+};
+
 // endregion
 
 class NczBodyWriter : public NcaBodyWriter
@@ -499,7 +744,7 @@ protected:
 
 public:
 
-     void write(const  u8* ptr, u64 sz) override
+     void write(const u8* ptr, u64 sz) override
      {
           if (isClosed())
           {
@@ -525,7 +770,7 @@ public:
                if (m_buffer.size() < NczHeader::MIN_HEADER_SIZE)
                {
                     // assert sz == 0
-                    return;
+                    return; // Need more data
                }
 
                // assert m_buffer.size() >= NczHeader::MIN_HEADER_SIZE
@@ -536,10 +781,10 @@ public:
                     THROW_FORMAT("Invalid NCZ Header");
                }
 
-               const u64 header_size = header->size(); // Compute once
-
                // Need to buffer the rest of the header before
                // we can extract the sections
+               const u64 header_size = header->size(); // Compute once
+
                if (m_buffer.size() < header_size)
                {
                     const u64 remainder = std::min(sz, header_size - m_buffer.size());
@@ -551,7 +796,7 @@ public:
                if (m_buffer.size() < header_size)
                {
                     // assert sz == 0
-                    return;
+                    return; // Need more data
                }
 
                // assert m_buffer.size() == header_size
@@ -572,7 +817,7 @@ public:
           if (!m_writer)
           {
                // Need to buffer enough to identify magic
-               const u64 header_size = sizeof(ZstdStreamWriter::ZSTD_MAGIC);
+               const u64 header_size = sizeof(NczBlockHeader::NCZBLOCK_MAGIC);
 
                if (m_buffer.size() < header_size)
                {
@@ -585,21 +830,26 @@ public:
                if (m_buffer.size() < header_size)
                {
                     // assert sz == 0
-                    return;
+                    return; // Need more data
                }
 
                // assert m_buffer.size() == header_size
 
                // Now we can check for magic
-               u32 magic32 = *(u32*)m_buffer.data();
+               u64 magic64; memcpy(&magic64, m_buffer.data(), sizeof(magic64));
+               u32 magic32; memcpy(&magic32, m_buffer.data(), sizeof(magic32));
 
                if (magic32 == ZstdStreamWriter::ZSTD_MAGIC)
                {
                     m_writer = std::make_unique<ZstdStreamWriter>(getDirectWriterFn());
                }
+               else if (magic64 == NczBlockHeader::NCZBLOCK_MAGIC)
+               {
+                    m_writer = std::make_unique<NczBlockStreamWriter>(getDirectWriterFn());
+               }
                else
                {
-                    LOG_DEBUG("Unknown NCZ Body Content - Using Direct Writer");
+                    LOG_DEBUG("[NczBodyWriter] Unknown NCZ Body Content - Using Direct Writer");
                     m_writer = std::make_unique<DirectStreamWriter>(getDirectWriterFn());
                }
 
@@ -689,7 +939,7 @@ void NcaWriter::write(const  u8* ptr, u64 sz)
           if (m_buffer.size() < NCA_HEADER_SIZE)
           {
                // assert sz == 0
-               return;
+               return; // Need more data
           }
 
           // assert m_buffer.size() == NCA_HEADER_SIZE
@@ -719,12 +969,12 @@ void NcaWriter::write(const  u8* ptr, u64 sz)
           if (m_buffer.size() < header_size)
           {
                // assert sz == 0
-               return;
+               return; // Need more data
           }
 
           // assert m_buffer.size() == header_size
 
-          u64 magic = *(u64*)m_buffer.data();
+          u64 magic; memcpy(&magic, m_buffer.data(), sizeof(magic));
 
           if (magic == NczHeader::MAGIC)
           {
