@@ -16,4 +16,5 @@ scripts
 *.log
 *.py
 *.sh
+*.bat
 *.a
