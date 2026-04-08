@@ -65,6 +65,8 @@ APP_VERSION_FULL := $(APP_VERSION)+$(GIT_COMMIT).$(GIT_STATUS)
 endif
 ICON		:=	romfs/images/icon.jpg
 ROMFS		:=	romfs
+LIB_BLOB ?= $(TOPDIR)/prebuilt/lib.a
+COMMA := ,
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -72,12 +74,6 @@ ROMFS		:=	romfs
 DEFINES	+=	-DAPP_VERSION=\"$(APP_VERSION)\"
 DEFINES	+=	-DAPP_GIT_META=\"$(APP_GIT_META)\"
 DEFINES	+=	-DAPP_VERSION_FULL=\"$(APP_VERSION_FULL)\"
-ifneq ($(strip $(HAUTH_SEED_OBF_HEX)),)
-DEFINES += -DHAUTH_SEED_OBF_HEX=\"$(HAUTH_SEED_OBF_HEX)\"
-endif
-ifneq ($(strip $(EMBEDDED_SHOP_KEY_OBF_HEX)),)
-DEFINES += -DEMBEDDED_SHOP_KEY_OBF_HEX=\"$(EMBEDDED_SHOP_KEY_OBF_HEX)\"
-endif
 ifeq ($(DEBUG),1)
 DEFINES += -DAPP_DEBUG_LOG
 endif
@@ -100,8 +96,11 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*
 LIBS	:=  `curl-config --libs` # Networking
 LIBS	+=	-lSDL2_mixer -lopusfile -lopus -lmodplug -lmpg123 -lvorbisidec -logg # Audio
 LIBS	+=	-lpu -lSDL2_gfx -lSDL2_image -lwebp -lpng -ljpeg `sdl2-config --libs` `$(PREFIX)pkg-config --libs freetype2` # Graphics
-LIBS	+=	-lmbedtls -lmbedcrypto -lminizip -lzstd # Memes
+LIBS	+=	-lminizip -lzstd # Compression/archive
 LIBS	+=	-lntfs-3g -llwext4
+LIBS_BLOB := $(if $(wildcard $(LIB_BLOB)),-Wl$(COMMA)--whole-archive $(LIB_BLOB) -Wl$(COMMA)--no-whole-archive,)
+LIBS += $(LIBS_BLOB)
+LIBS += -lmbedtls -lmbedx509 -lmbedcrypto # Must come after LIBS_BLOB
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -119,6 +118,7 @@ ifneq ($(BUILD),$(notdir $(CURDIR)))
 
 export OUTPUT	:=	$(CURDIR)/$(TARGET)
 export TOPDIR	:=	$(CURDIR)
+export LIB_BLOB
 
 export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
 			$(foreach dir,$(DATA),$(CURDIR)/$(dir))
@@ -224,7 +224,7 @@ endif
 else
 .PHONY:	all
 
-DEPENDS	:=	$(OFILES:.o=.d)
+DEPENDS	:=	$(OFILES_SRC:.o=.d)
 
 #---------------------------------------------------------------------------------
 # main targets

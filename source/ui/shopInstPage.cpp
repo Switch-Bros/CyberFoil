@@ -3596,9 +3596,14 @@ namespace inst::ui {
         loadingPercent = std::max(loadingPercent, 82);
         this->setLoadingProgress(loadingPercent, true);
         mainApp->CallForRender();
-        this->saveSyncEnabled = !usedLegacyFallback;
+        this->saveSyncEnabled = !usedLegacyFallback && !inst::config::shopLegacyMode;
         ShopDlcTrace("FetchShopSections done sections=%llu errorLen=%llu", static_cast<unsigned long long>(this->shopSections.size()), static_cast<unsigned long long>(error.size()));
-        ShopDlcTrace("save sync eligibility legacyFallback=%d enabled=%d", usedLegacyFallback ? 1 : 0, this->saveSyncEnabled ? 1 : 0);
+        ShopDlcTrace(
+            "save sync eligibility legacyFallback=%d tinfoilMode=%d enabled=%d",
+            usedLegacyFallback ? 1 : 0,
+            inst::config::shopLegacyMode ? 1 : 0,
+            this->saveSyncEnabled ? 1 : 0
+        );
         if (!error.empty()) {
             ShopDlcTrace("FetchShopSections error: %s", error.c_str());
             mainApp->CreateShowDialog("inst.shop.failed"_lang, error, {"common.ok"_lang}, true);
@@ -4750,4 +4755,5 @@ namespace inst::ui {
         this->bottomHintSegments = BuildBottomHintSegments(fullText, 10, hintFontSize);
     }
 }
+
 

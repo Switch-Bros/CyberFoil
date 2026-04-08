@@ -32,6 +32,7 @@ namespace inst::config {
     bool shopHideInstalled;
     bool shopHideInstalledSection;
     bool shopAllBaseOnly;
+    bool shopLegacyMode;
     bool shopStartGridMode;
     bool offlineDbAutoCheckOnStartup;
     bool verboseInstallLogging;
@@ -654,6 +655,7 @@ namespace inst::config {
             {"shopHideInstalled", shopHideInstalled},
             {"shopHideInstalledSection", shopHideInstalledSection},
             {"shopAllBaseOnly", shopAllBaseOnly},
+            {"shopLegacyMode", shopLegacyMode},
             {"shopStartGridMode", shopStartGridMode},
             {"offlineDbAutoCheckOnStartup", offlineDbAutoCheckOnStartup},
             {"verboseInstallLogging", verboseInstallLogging},
@@ -687,6 +689,7 @@ namespace inst::config {
         shopHideInstalled = false;
         shopHideInstalledSection = false;
         shopAllBaseOnly = false;
+        shopLegacyMode = false;
         shopStartGridMode = false;
         offlineDbAutoCheckOnStartup = true;
         verboseInstallLogging = false;
@@ -722,6 +725,7 @@ namespace inst::config {
             if (j.contains("shopHideInstalled")) shopHideInstalled = j["shopHideInstalled"].get<bool>();
             if (j.contains("shopHideInstalledSection")) shopHideInstalledSection = j["shopHideInstalledSection"].get<bool>();
             if (j.contains("shopAllBaseOnly")) shopAllBaseOnly = j["shopAllBaseOnly"].get<bool>();
+            if (j.contains("shopLegacyMode")) shopLegacyMode = j["shopLegacyMode"].get<bool>();
             if (j.contains("shopStartGridMode")) shopStartGridMode = j["shopStartGridMode"].get<bool>();
             if (j.contains("offlineDbAutoCheckOnStartup")) offlineDbAutoCheckOnStartup = j["offlineDbAutoCheckOnStartup"].get<bool>();
             if (j.contains("verboseInstallLogging")) verboseInstallLogging = j["verboseInstallLogging"].get<bool>();
@@ -749,6 +753,7 @@ namespace inst::config {
                 "shopHideInstalled",
                 "shopHideInstalledSection",
                 "shopAllBaseOnly",
+                "shopLegacyMode",
                 "shopStartGridMode",
                 "offlineDbAutoCheckOnStartup",
                 "verboseInstallLogging"
@@ -795,3 +800,4 @@ namespace inst::config {
             setConfig();
     }
 }
+

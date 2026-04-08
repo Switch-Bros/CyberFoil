@@ -9,9 +9,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      HAUTH_SEED: ${{ secrets.HAUTH_SEED }}
-
     container:
       image: devkitpro/devkita64:latest
 
@@ -22,18 +19,52 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Download prebuilt lib.a from CyberFoil_Blob release
+        shell: bash
+        env:
+          BLOB_REPO_TOKEN: ${{ secrets.BLOB_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BLOB_REPO_TOKEN:-}" ]; then
+            echo "ERROR: Missing secret BLOB_REPO_TOKEN"
+            exit 1
+          fi
+
+          owner="${GITHUB_REPOSITORY_OWNER}"
+          blob_repo="CyberFoil_Blob"
+          asset_name="lib.a"
+          api_release="https://api.github.com/repos/${owner}/${blob_repo}/releases/latest"
+
+          release_json="$(curl -fsSL \
+            -H "Authorization: Bearer ${BLOB_REPO_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api_release}")"
+
+          asset_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); n="lib.a"; print(next((str(a["id"]) for a in d.get("assets",[]) if a.get("name")==n), ""))' <<< "${release_json}")"
+          if [ -z "${asset_id}" ]; then
+            echo "ERROR: Asset ${asset_name} not found in latest ${blob_repo} release"
+            exit 1
+          fi
+
+          mkdir -p prebuilt
+          curl -fsSL -L \
+            -H "Authorization: Bearer ${BLOB_REPO_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/${owner}/${blob_repo}/releases/assets/${asset_id}" \
+            -o prebuilt/lib.a
+
+          if [ ! -s prebuilt/lib.a ]; then
+            echo "ERROR: Downloaded prebuilt/lib.a is missing or empty"
+            exit 1
+          fi
+
       - name: Build + verify expected NRO name/location
         shell: bash
         run: |
           set -euo pipefail
 
           dkp-pacman -S --noconfirm --needed switch-ntfs-3g switch-lwext4
-          if [ -n "${HAUTH_SEED:-}" ]; then
-            HAUTH_SEED_OBF_HEX="$(python3 -c 'import os; s=os.environ.get("HAUTH_SEED", "").strip().encode("utf-8"); print("".join(f"{(b ^ ((0xA7 + ((i * 37) + 0x5C)) & 0xFF)):02x}" for i, b in enumerate(s)))')"
-            make -j"$(nproc)" HAUTH_SEED_OBF_HEX="$HAUTH_SEED_OBF_HEX"
-          else
-            make -j"$(nproc)"
-          fi
+          make -j"$(nproc)"
 
           # Your Makefile outputs ./cyberfoil.nro (TARGET := cyberfoil)
           if [ ! -f "./cyberfoil.nro" ]; then

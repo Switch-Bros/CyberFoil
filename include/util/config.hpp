@@ -43,6 +43,7 @@ namespace inst::config {
     extern bool shopHideInstalled;
     extern bool shopHideInstalledSection;
     extern bool shopAllBaseOnly;
+    extern bool shopLegacyMode;
     extern bool shopStartGridMode;
     extern bool offlineDbAutoCheckOnStartup;
     extern bool verboseInstallLogging;
@@ -73,3 +74,4 @@ namespace inst::config {
     void setConfig();
     void parseConfig();
 }
+

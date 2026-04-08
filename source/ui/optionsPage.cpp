@@ -561,6 +561,7 @@ namespace inst::ui {
             addItem("Memorized shops: " + std::to_string(shops.size()), false, false);
             addItem("Add new shop", false, false);
             addItem("User-Agent profile: " + GetUserAgentProfileLabel(inst::config::httpUserAgentMode), false, false);
+            addItem("Tinfoil Mode (legacy shop compatibility)", true, inst::config::shopLegacyMode);
             addItem("options.menu_items.shop_hide_installed"_lang, true, inst::config::shopHideInstalled);
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
             addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
@@ -766,7 +767,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 25, 26, 12, 13, 24, 19, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
@@ -1034,6 +1035,11 @@ namespace inst::ui {
                     inst::config::setConfig();
                     this->refreshOptions();
                     break;
+                case 26:
+                    inst::config::shopLegacyMode = !inst::config::shopLegacyMode;
+                    inst::config::setConfig();
+                    this->refreshOptions();
+                    break;
                 case 13:
                     inst::config::shopHideInstalledSection = !inst::config::shopHideInstalledSection;
                     inst::config::setConfig();
@@ -1180,4 +1186,5 @@ namespace inst::ui {
         }
     }
 }
+
 
