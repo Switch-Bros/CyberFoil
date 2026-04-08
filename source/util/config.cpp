@@ -34,6 +34,7 @@ namespace inst::config {
     bool shopAllBaseOnly;
     bool shopStartGridMode;
     bool offlineDbAutoCheckOnStartup;
+    bool verboseInstallLogging;
 
     namespace {
         std::string ToLower(std::string value)
@@ -146,12 +147,37 @@ namespace inst::config {
             return candidate;
         }
 
-        bool ParseShopUrl(const std::string& rawUrl, std::string& protocol, std::string& host, int& port)
+        nlohmann::json BuildShopJson(const inst::config::ShopProfile& shop)
+        {
+            inst::config::ShopProfile normalized = shop;
+            normalized.protocol = NormalizeProtocol(normalized.protocol);
+            normalized.host = Trim(normalized.host);
+            normalized.path = inst::config::NormalizeShopPath(normalized.path);
+            normalized.title = Trim(normalized.title);
+            if (normalized.port <= 0 || normalized.port > 65535)
+                normalized.port = DefaultPortForNormalizedProtocol(normalized.protocol);
+
+            return {
+                {"shop", {
+                    {"protocol", normalized.protocol},
+                    {"host", normalized.host},
+                    {"path", normalized.path},
+                    {"port", normalized.port},
+                    {"username", normalized.username},
+                    {"password", normalized.password},
+                    {"title", normalized.title},
+                    {"favourite", normalized.favourite}
+                }}
+            };
+        }
+
+        bool ParseShopUrlImpl(const std::string& rawUrl, std::string& protocol, std::string& host, int& port, std::string& path)
         {
             std::string url = Trim(rawUrl);
             if (url.empty())
                 return false;
 
+            path.clear();
             protocol = "http";
             if (url.rfind("https://", 0) == 0) {
                 protocol = "https";
@@ -162,8 +188,17 @@ namespace inst::config {
             }
 
             std::size_t slashPos = url.find('/');
+            std::size_t queryPos = url.find_first_of("?#");
+            std::size_t authorityEnd = std::string::npos;
             if (slashPos != std::string::npos)
-                url = url.substr(0, slashPos);
+                authorityEnd = slashPos;
+            if (queryPos != std::string::npos && (authorityEnd == std::string::npos || queryPos < authorityEnd))
+                authorityEnd = queryPos;
+
+            if (slashPos != std::string::npos && slashPos == authorityEnd)
+                path = inst::config::NormalizeShopPath(url.substr(slashPos));
+            if (authorityEnd != std::string::npos)
+                url = url.substr(0, authorityEnd);
 
             std::size_t atPos = url.rfind('@');
             if (atPos != std::string::npos)
@@ -204,7 +239,7 @@ namespace inst::config {
             return true;
         }
 
-        bool ParseShopFile(const std::filesystem::path& path, inst::config::ShopProfile& outShop)
+        bool ParseShopFile(const std::filesystem::path& path, inst::config::ShopProfile& outShop, bool* outNeedsRewrite = nullptr)
         {
             std::ifstream file(path);
             if (!file)
@@ -221,72 +256,166 @@ namespace inst::config {
             if (!root.is_object())
                 return false;
 
+            bool needsRewrite = false;
             const nlohmann::json* shopNode = &root;
             if (root.contains("shop")) {
                 if (!root["shop"].is_object())
                     return false;
                 shopNode = &root["shop"];
+            } else {
+                needsRewrite = true;
             }
 
-            inst::config::ShopProfile parsed;
-            parsed.protocol = "http";
-            parsed.port = DefaultPortForNormalizedProtocol(parsed.protocol);
-            parsed.favourite = false;
-            parsed.protocol = NormalizeProtocol(shopNode->value("protocol", "http"));
-            parsed.port = DefaultPortForNormalizedProtocol(parsed.protocol);
-            parsed.host = shopNode->value("host", "");
-            parsed.username = shopNode->value("username", "");
-            parsed.password = shopNode->value("password", "");
-            parsed.title = shopNode->value("title", "");
-
-            if (shopNode->contains("port")) {
-                const auto& portValue = (*shopNode)["port"];
-                int parsedPort = 0;
-                if (portValue.is_number_integer()) {
-                    parsedPort = portValue.get<int>();
-                    if (parsedPort > 0 && parsedPort <= 65535)
-                        parsed.port = parsedPort;
-                } else if (portValue.is_number_unsigned()) {
-                    std::uint32_t raw = portValue.get<std::uint32_t>();
-                    if (raw > 0 && raw <= 65535)
-                        parsed.port = static_cast<int>(raw);
-                } else if (portValue.is_string()) {
-                    if (ParsePortValue(portValue.get<std::string>(), parsedPort))
-                        parsed.port = parsedPort;
-                }
-            }
-
-            const char* favouriteKeys[] = {"favourite", "favorite"};
-            for (const char* key : favouriteKeys) {
-                if (!shopNode->contains(key))
-                    continue;
-                const auto& favouriteValue = (*shopNode)[key];
-                bool parsedFavourite = false;
-                if (favouriteValue.is_boolean()) {
-                    parsed.favourite = favouriteValue.get<bool>();
-                } else if (favouriteValue.is_number_integer()) {
-                    parsed.favourite = favouriteValue.get<int>() != 0;
-                } else if (favouriteValue.is_number_unsigned()) {
-                    parsed.favourite = favouriteValue.get<unsigned int>() != 0;
-                } else if (favouriteValue.is_string() &&
-                           ParseBoolTextValue(favouriteValue.get<std::string>(), parsedFavourite)) {
-                    parsed.favourite = parsedFavourite;
-                }
-                break;
-            }
-
-            parsed.protocol = NormalizeProtocol(parsed.protocol);
-            parsed.host = Trim(parsed.host);
-            parsed.title = Trim(parsed.title);
-            if (parsed.port <= 0 || parsed.port > 65535)
+            try {
+                inst::config::ShopProfile parsed;
+                parsed.protocol = "http";
                 parsed.port = DefaultPortForNormalizedProtocol(parsed.protocol);
-            if (parsed.host.empty() || parsed.title.empty())
-                return false;
+                parsed.favourite = false;
 
-            parsed.fileName = path.filename().string();
-            parsed.updatedAt = GetWriteTimestampSeconds(path);
-            outShop = parsed;
-            return true;
+                const std::string rawProtocol = shopNode->value("protocol", "http");
+                parsed.protocol = NormalizeProtocol(rawProtocol);
+                if (parsed.protocol != Trim(rawProtocol))
+                    needsRewrite = true;
+                parsed.port = DefaultPortForNormalizedProtocol(parsed.protocol);
+
+                std::string parsedUrlProtocol;
+                std::string parsedUrlHost;
+                std::string parsedUrlPath;
+                int parsedUrlPort = DefaultPortForNormalizedProtocol(parsed.protocol);
+
+                if (shopNode->contains("url") && (*shopNode)["url"].is_string()) {
+                    if (ParseShopUrlImpl((*shopNode)["url"].get<std::string>(), parsedUrlProtocol, parsedUrlHost, parsedUrlPort, parsedUrlPath)) {
+                        parsed.protocol = parsedUrlProtocol;
+                        parsed.port = parsedUrlPort;
+                        parsed.host = parsedUrlHost;
+                        parsed.path = parsedUrlPath;
+                        needsRewrite = true;
+                    }
+                }
+
+                if (parsed.host.empty())
+                    parsed.host = shopNode->value("host", "");
+                if (parsed.path.empty())
+                    parsed.path = NormalizeShopPath(shopNode->value("path", ""));
+                parsed.username = shopNode->value("username", "");
+                parsed.password = shopNode->value("password", "");
+                parsed.title = shopNode->value("title", "");
+
+                if (!shopNode->contains("host") || !(*shopNode)["host"].is_string())
+                    needsRewrite = true;
+                if (!shopNode->contains("path") || !(*shopNode)["path"].is_string())
+                    needsRewrite = true;
+                if (!shopNode->contains("title") || !(*shopNode)["title"].is_string())
+                    needsRewrite = true;
+                if (!shopNode->contains("username") || !(*shopNode)["username"].is_string())
+                    needsRewrite = true;
+                if (!shopNode->contains("password") || !(*shopNode)["password"].is_string())
+                    needsRewrite = true;
+
+                if (shopNode->contains("port")) {
+                    const auto& portValue = (*shopNode)["port"];
+                    int parsedPort = 0;
+                    if (portValue.is_number_integer()) {
+                        parsedPort = portValue.get<int>();
+                        if (parsedPort > 0 && parsedPort <= 65535)
+                            parsed.port = parsedPort;
+                    } else if (portValue.is_number_unsigned()) {
+                        std::uint32_t raw = portValue.get<std::uint32_t>();
+                        if (raw > 0 && raw <= 65535)
+                            parsed.port = static_cast<int>(raw);
+                    } else if (portValue.is_string()) {
+                        if (ParsePortValue(portValue.get<std::string>(), parsedPort))
+                            parsed.port = parsedPort;
+                        else
+                            needsRewrite = true;
+                    } else {
+                        needsRewrite = true;
+                    }
+                } else {
+                    needsRewrite = true;
+                }
+
+                const char* favouriteKeys[] = {"favourite", "favorite"};
+                bool sawFavourite = false;
+                for (const char* key : favouriteKeys) {
+                    if (!shopNode->contains(key))
+                        continue;
+                    sawFavourite = true;
+                    const auto& favouriteValue = (*shopNode)[key];
+                    bool parsedFavourite = false;
+                    if (favouriteValue.is_boolean()) {
+                        parsed.favourite = favouriteValue.get<bool>();
+                    } else if (favouriteValue.is_number_integer()) {
+                        parsed.favourite = favouriteValue.get<int>() != 0;
+                    } else if (favouriteValue.is_number_unsigned()) {
+                        parsed.favourite = favouriteValue.get<unsigned int>() != 0;
+                    } else if (favouriteValue.is_string() &&
+                               ParseBoolTextValue(favouriteValue.get<std::string>(), parsedFavourite)) {
+                        parsed.favourite = parsedFavourite;
+                        needsRewrite = true;
+                    } else {
+                        needsRewrite = true;
+                    }
+                    if (std::string(key) == "favorite")
+                        needsRewrite = true;
+                    break;
+                }
+                if (!sawFavourite)
+                    needsRewrite = true;
+
+                std::string normalizedHost = Trim(parsed.host);
+                if (normalizedHost != parsed.host)
+                    needsRewrite = true;
+                parsed.host = normalizedHost;
+
+                std::string normalizedPath = NormalizeShopPath(parsed.path);
+                if (normalizedPath != parsed.path)
+                    needsRewrite = true;
+                parsed.path = normalizedPath;
+
+                std::string normalizedTitle = Trim(parsed.title);
+                if (normalizedTitle.empty()) {
+                    normalizedTitle = parsed.path.empty() ? parsed.host : (parsed.host + parsed.path);
+                    needsRewrite = true;
+                } else if (normalizedTitle != parsed.title) {
+                    needsRewrite = true;
+                }
+                parsed.title = normalizedTitle;
+
+                if (parsed.port <= 0 || parsed.port > 65535)
+                    parsed.port = DefaultPortForNormalizedProtocol(parsed.protocol);
+                if (parsed.host.empty() || parsed.title.empty())
+                    return false;
+
+                parsed.fileName = path.filename().string();
+                parsed.updatedAt = GetWriteTimestampSeconds(path);
+                outShop = parsed;
+                if (outNeedsRewrite != nullptr)
+                    *outNeedsRewrite = needsRewrite;
+                return true;
+            } catch (...) {
+                return false;
+            }
+        }
+
+        void MigrateLegacyShopFiles()
+        {
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator(inst::config::shopsDir, ec)) {
+                if (ec)
+                    break;
+                if (!entry.is_regular_file())
+                    continue;
+
+                bool needsRewrite = false;
+                inst::config::ShopProfile parsed;
+                if (!ParseShopFile(entry.path(), parsed, &needsRewrite) || !needsRewrite)
+                    continue;
+
+                parsed.fileName = entry.path().filename().string();
+                std::string ignored;
+                inst::config::SaveShop(parsed, &ignored);
+            }
         }
 
         void SortShopProfiles(std::vector<inst::config::ShopProfile>& shops)
@@ -329,17 +458,19 @@ namespace inst::config {
 
             std::string protocol;
             std::string host;
+            std::string path;
             int port = DefaultPortForProtocol("http");
-            if (!ParseShopUrl(inst::config::shopUrl, protocol, host, port))
+            if (!ParseShopUrl(inst::config::shopUrl, protocol, host, port, path))
                 return;
 
             inst::config::ShopProfile migrated;
             migrated.protocol = protocol;
             migrated.host = host;
+            migrated.path = path;
             migrated.port = port;
             migrated.username = inst::config::shopUser;
             migrated.password = inst::config::shopPass;
-            migrated.title = host;
+            migrated.title = path.empty() ? host : (host + path);
             migrated.favourite = false;
 
             std::string ignored;
@@ -359,11 +490,38 @@ namespace inst::config {
             return "chrome";
         if (normalized == "safari")
             return "safari";
+        if (normalized == "tinfoil")
+            return "tinfoil";
         if (normalized == "firefox")
             return "firefox";
         if (normalized == "custom")
             return "custom";
         return "default";
+    }
+
+    std::string NormalizeShopPath(const std::string& value)
+    {
+        std::string normalized = Trim(value);
+        if (normalized.empty())
+            return "";
+
+        std::size_t suffixPos = normalized.find_first_of("?#");
+        if (suffixPos != std::string::npos)
+            normalized = normalized.substr(0, suffixPos);
+
+        normalized = Trim(normalized);
+        if (normalized.empty() || normalized == "/")
+            return "";
+        if (normalized.front() != '/')
+            normalized.insert(normalized.begin(), '/');
+        while (normalized.size() > 1 && normalized.back() == '/')
+            normalized.pop_back();
+        return normalized == "/" ? "" : normalized;
+    }
+
+    bool ParseShopUrl(const std::string& rawUrl, std::string& protocol, std::string& host, int& port, std::string& path)
+    {
+        return ParseShopUrlImpl(rawUrl, protocol, host, port, path);
     }
 
     std::string BuildShopUrl(const ShopProfile& shop)
@@ -373,11 +531,12 @@ namespace inst::config {
             return "";
 
         std::string protocol = NormalizeProtocol(shop.protocol);
+        std::string path = NormalizeShopPath(shop.path);
         int port = shop.port;
         if (port <= 0 || port > 65535)
             port = DefaultPortForNormalizedProtocol(protocol);
 
-        return protocol + "://" + host + ":" + std::to_string(port);
+        return protocol + "://" + host + ":" + std::to_string(port) + path;
     }
 
     std::vector<ShopProfile> LoadShops()
@@ -416,6 +575,7 @@ namespace inst::config {
         ShopProfile normalized = shop;
         normalized.protocol = NormalizeProtocol(normalized.protocol);
         normalized.host = Trim(normalized.host);
+        normalized.path = NormalizeShopPath(normalized.path);
         normalized.title = Trim(normalized.title);
         if (normalized.port <= 0 || normalized.port > 65535)
             normalized.port = DefaultPortForNormalizedProtocol(normalized.protocol);
@@ -437,17 +597,7 @@ namespace inst::config {
         if (!file)
             return fail("Failed to open shop file for writing.");
 
-        nlohmann::json j = {
-            {"shop", {
-                {"protocol", normalized.protocol},
-                {"host", normalized.host},
-                {"port", normalized.port},
-                {"username", normalized.username},
-                {"password", normalized.password},
-                {"title", normalized.title},
-                {"favourite", normalized.favourite}
-            }}
-        };
+        nlohmann::json j = BuildShopJson(normalized);
 
         file << std::setw(4) << j << std::endl;
 
@@ -506,6 +656,7 @@ namespace inst::config {
             {"shopAllBaseOnly", shopAllBaseOnly},
             {"shopStartGridMode", shopStartGridMode},
             {"offlineDbAutoCheckOnStartup", offlineDbAutoCheckOnStartup},
+            {"verboseInstallLogging", verboseInstallLogging},
             {"shopRememberSelection", false},
             {"shopSelection", nlohmann::json::array()}
         };
@@ -538,7 +689,9 @@ namespace inst::config {
         shopAllBaseOnly = false;
         shopStartGridMode = false;
         offlineDbAutoCheckOnStartup = true;
+        verboseInstallLogging = false;
         bool hasHttpUserAgentModeKey = false;
+        bool needsConfigRewrite = false;
 
         try {
             std::ifstream file(inst::config::configPath);
@@ -571,6 +724,42 @@ namespace inst::config {
             if (j.contains("shopAllBaseOnly")) shopAllBaseOnly = j["shopAllBaseOnly"].get<bool>();
             if (j.contains("shopStartGridMode")) shopStartGridMode = j["shopStartGridMode"].get<bool>();
             if (j.contains("offlineDbAutoCheckOnStartup")) offlineDbAutoCheckOnStartup = j["offlineDbAutoCheckOnStartup"].get<bool>();
+            if (j.contains("verboseInstallLogging")) verboseInstallLogging = j["verboseInstallLogging"].get<bool>();
+
+            static const char* currentKeys[] = {
+                "autoUpdate",
+                "deletePrompt",
+                "gAuthKey",
+                "gayMode",
+                "soundEnabled",
+                "oledMode",
+                "mtpExposeAlbum",
+                "ignoreReqVers",
+                "languageSetting",
+                "overClock",
+                "usbAck",
+                "validateNCAs",
+                "lastNetUrl",
+                "offlineDbManifestUrl",
+                "shopUrl",
+                "shopUser",
+                "shopPass",
+                "httpUserAgentMode",
+                "httpUserAgent",
+                "shopHideInstalled",
+                "shopHideInstalledSection",
+                "shopAllBaseOnly",
+                "shopStartGridMode",
+                "offlineDbAutoCheckOnStartup",
+                "verboseInstallLogging"
+            };
+
+            for (const char* key : currentKeys) {
+                if (!j.contains(key)) {
+                    needsConfigRewrite = true;
+                    break;
+                }
+            }
         }
         catch (...) {
             // If loading values from the config fails, we just load the defaults and overwrite the old config
@@ -581,7 +770,28 @@ namespace inst::config {
         if (!hasHttpUserAgentModeKey && !Trim(httpUserAgent).empty())
             httpUserAgentMode = "custom";
 
+        if (!Trim(shopUrl).empty()) {
+            std::string protocol;
+            std::string host;
+            std::string path;
+            int port = DefaultPortForProtocol("http");
+            if (ParseShopUrl(shopUrl, protocol, host, port, path)) {
+                ShopProfile normalizedShop;
+                normalizedShop.protocol = protocol;
+                normalizedShop.host = host;
+                normalizedShop.path = path;
+                normalizedShop.port = port;
+                const std::string normalizedShopUrl = BuildShopUrl(normalizedShop);
+                if (normalizedShopUrl != shopUrl)
+                    needsConfigRewrite = true;
+                shopUrl = normalizedShopUrl;
+            }
+        }
+
         EnsureShopsDirectory();
         TryMigrateLegacyShopToJson();
+        MigrateLegacyShopFiles();
+        if (needsConfigRewrite)
+            setConfig();
     }
 }

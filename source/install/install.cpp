@@ -27,9 +27,11 @@ SOFTWARE.
 #include <memory>
 #include <algorithm>
 #include "util/error.hpp"
+#include "util/install_diagnostics.hpp"
 #include "ui/instPage.hpp"
 
 #include "nx/ncm.hpp"
+#include "util/config.hpp"
 #include "util/title_util.hpp"
 
 
@@ -121,7 +123,9 @@ namespace tin::install
         tin::data::ByteBuffer cnmtBuf;
 
         try {
+            inst::diag::NoteStep("Prepare phase: reading CNMT records");
             std::vector<std::tuple<nx::ncm::ContentMeta, NcmContentInfo>> tupelList = this->ReadCNMT();
+            inst::diag::NoteStep("Prepare phase: discovered " + std::to_string(tupelList.size()) + " CNMT record(s)");
             
             for (size_t i = 0; i < tupelList.size(); i++) {
                 if (inst::ui::instPage::isInstallCancelRequested())
@@ -136,12 +140,14 @@ namespace tin::install
                 if (!contentStorage.Has(cnmtContentRecord.content_id))
                 {
                     LOG_DEBUG("Installing CNMT NCA...\n");
+                    inst::diag::NoteStep("Prepare phase: installing CNMT NCA " + tin::util::GetNcaIdString(cnmtContentRecord.content_id));
                     this->InstallNCA(cnmtContentRecord.content_id);
                     TrackSessionInstalledNca(cnmtContentRecord.content_id);
                 }
                 else
                 {
                     LOG_DEBUG("CNMT NCA already installed. Proceeding...\n");
+                    inst::diag::NoteStep("Prepare phase: CNMT already present " + tin::util::GetNcaIdString(cnmtContentRecord.content_id));
                 }
 
                 // Parse data and create install content meta
@@ -150,6 +156,7 @@ namespace tin::install
 
                 tin::data::ByteBuffer installContentMetaBuf;
                 m_contentMeta[i].GetInstallContentMeta(installContentMetaBuf, cnmtContentRecord, m_ignoreReqFirmVersion);
+                inst::diag::NoteStep("Prepare phase: writing content meta record #" + std::to_string(i + 1));
 
                 this->InstallContentMetaRecords(installContentMetaBuf, i);
                 this->InstallApplicationRecord(i);
@@ -164,6 +171,7 @@ namespace tin::install
     void Install::Begin()
     {
         LOG_DEBUG("Installing ticket and cert...\n");
+        inst::diag::NoteStep("Install phase: ticket/cert import");
         try
         {
             this->InstallTicketCert();
@@ -176,6 +184,7 @@ namespace tin::install
         try {
             for (nx::ncm::ContentMeta contentMeta: m_contentMeta) {
                 LOG_DEBUG("Installing NCAs...\n");
+                inst::diag::NoteStep("Install phase: NCA validation " + std::string(inst::config::validateNCAs ? "enabled" : "disabled"));
                 for (auto& record : contentMeta.GetContentInfos())
                 {
                     if (inst::ui::instPage::isInstallCancelRequested())
@@ -183,10 +192,12 @@ namespace tin::install
                     nx::ncm::ContentStorage contentStorage(m_destStorageId);
                     if (contentStorage.Has(record.content_id)) {
                         LOG_DEBUG("NCA already installed. Skipping %s\n", tin::util::GetNcaIdString(record.content_id).c_str());
+                        inst::diag::NoteStep("Install phase: skip existing NCA " + tin::util::GetNcaIdString(record.content_id));
                         continue;
                     }
 
                     LOG_DEBUG("Installing from %s\n", tin::util::GetNcaIdString(record.content_id).c_str());
+                    inst::diag::NoteStep("Install phase: writing NCA " + tin::util::GetNcaIdString(record.content_id));
                     this->InstallNCA(record.content_id);
                     TrackSessionInstalledNca(record.content_id);
                 }

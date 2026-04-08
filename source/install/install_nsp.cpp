@@ -31,6 +31,7 @@ SOFTWARE.
 #include "util/config.hpp"
 #include "util/crypto.hpp"
 #include "util/file_util.hpp"
+#include "util/install_diagnostics.hpp"
 #include "util/title_util.hpp"
 #include "util/debug.h"
 #include "util/error.hpp"
@@ -83,10 +84,8 @@ namespace tin::install::nsp
         const PFS0FileEntry* fileEntry = m_NSP->GetFileEntryByNcaId(ncaId);
         std::string ncaFileName = m_NSP->GetFileEntryName(fileEntry);
 
-        #ifdef NXLINK_DEBUG
         size_t ncaSize = fileEntry->fileSize;
         LOG_DEBUG("Installing %s to storage Id %u\n", ncaFileName.c_str(), m_destStorageId);
-        #endif
 
         std::shared_ptr<nx::ncm::ContentStorage> contentStorage(new nx::ncm::ContentStorage(m_destStorageId));
 
@@ -101,6 +100,7 @@ namespace tin::install::nsp
         try {
             if (inst::config::validateNCAs && !m_declinedValidation)
             {
+                inst::diag::NoteStep("NCA verify: validating signature for " + tin::util::GetNcaIdString(ncaId));
                 tin::install::NcaHeader* header = new NcaHeader;
                 m_NSP->BufferData(header, m_NSP->GetDataOffset() + fileEntry->dataOffset, sizeof(tin::install::NcaHeader));
 
@@ -112,6 +112,7 @@ namespace tin::install::nsp
 
                 if (!Crypto::rsa2048PssVerify(&header->magic, 0x200, header->fixed_key_sig, Crypto::NCAHeaderSignature))
                 {
+                    inst::diag::NoteStep("NCA verify: signature validation failed for " + tin::util::GetNcaIdString(ncaId), false);
                     std::string audioPath = "romfs:/audio/bark.wav";
                     if (!inst::config::soundEnabled) audioPath = "";
                     if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
@@ -121,6 +122,10 @@ namespace tin::install::nsp
                     if (rc != 1)
                         THROW_FORMAT(("inst.nca_verify.error"_lang + tin::util::GetNcaIdString(ncaId)).c_str());
                     m_declinedValidation = true;
+                    inst::diag::NoteStep("NCA verify: user bypass enabled for remaining NCAs", false);
+                }
+                else {
+                    inst::diag::NoteStep("NCA verify: signature valid for " + tin::util::GetNcaIdString(ncaId));
                 }
                 delete header;
             }

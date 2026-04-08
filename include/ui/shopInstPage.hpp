@@ -47,6 +47,11 @@ namespace inst::ui {
             Rectangle::Ref batteryFill;
             Rectangle::Ref batteryCap;
         private:
+            enum class BrowseSortMode {
+                Default,
+                DateDesc,
+                NameAsc
+            };
             std::vector<shopInstStuff::ShopSection> shopSections;
             std::vector<shopInstStuff::ShopItem> selectedItems;
             std::vector<shopInstStuff::ShopItem> visibleItems;
@@ -64,13 +69,18 @@ namespace inst::ui {
             bool nativeUpdatesSectionPresent = false;
             bool nativeDlcSectionPresent = false;
             bool saveSyncEnabled = false;
+            bool saveSyncLoaded = false;
+            bool pendingMotdFetch = false;
+            bool suppressBottomHints = false;
             std::string activeShopUrl;
+            BrowseSortMode browseSortMode = BrowseSortMode::Default;
             BottomHintTouchState bottomHintTouch;
             std::vector<BottomHintSegment> bottomHintSegments;
             int selectedSectionIndex = 0;
             std::string searchQuery;
             std::string previewKey;
             bool debugVisible = false;
+            int allSortMode = 0;
             bool descriptionVisible = false;
             bool descriptionOverlayVisible = false;
             std::vector<std::string> descriptionOverlayLines;
@@ -169,7 +179,14 @@ namespace inst::ui {
             pu::ui::elm::Menu::Ref saveVersionSelectorMenu;
             void centerPageInfoText();
             void setLoadingProgress(int percent, bool visible);
+            void applyAllSectionSort();
+            std::string getAllSortModeLabel() const;
+            const char* getBrowseSortLabel() const;
+            void applyBrowseSort();
+            void openSearchDialog();
+            void openSortDialog();
             void drawMenuItems(bool clearItems);
+            void refreshListSelectionIcons();
             void selectTitle(int selectedIndex);
             void updateRememberedSelection();
             void updateSectionText();
@@ -190,6 +207,7 @@ namespace inst::ui {
             bool isAllSection() const;
             bool isInstalledSection() const;
             bool isSaveSyncSection() const;
+            void ensureSaveSyncSectionLoaded();
             void showInstalledDetails();
             void buildSaveSyncSection(const std::string& shopUrl);
             void refreshSaveSyncSection(std::uint64_t selectedTitleId, int previousSectionIndex);
@@ -205,6 +223,7 @@ namespace inst::ui {
             void scrollDescriptionOverlay(int delta);
             void refreshDescriptionOverlayBody();
             void updateDescriptionPanel();
+            void refreshAfterInstall();
             void resetIconDownloadState();
             void queueIconDownload(const shopInstStuff::ShopItem& item, const std::string& filePath);
             void refreshImageLoadingText(bool showCompleted = false);

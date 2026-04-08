@@ -1,5 +1,6 @@
 #include <thread>
 #include "switch.h"
+#include "util/debug.h"
 #include "util/error.hpp"
 #include "ui/MainApplication.hpp"
 #include "util/util.hpp"
@@ -11,6 +12,7 @@ int main(int argc, char* argv[])
 {
     bool appInitialized = false;
     try {
+        debugLogReset();
         inst::util::initApp();
         appInitialized = true;
         auto renderer = Renderer::New(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC | SDL_INIT_GAMECONTROLLER,

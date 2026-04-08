@@ -33,6 +33,7 @@ SOFTWARE.
 #include "util/usb_util.hpp"
 #include "util/util.hpp"
 #include "util/config.hpp"
+#include "util/install_diagnostics.hpp"
 #include "util/lang.hpp"
 #include "ui/MainApplication.hpp"
 #include "ui/usbInstPage.hpp"
@@ -94,9 +95,11 @@ namespace usbInstStuff {
         inst::ui::instPage::loadInstallScreen();
         bool nspInstalled = true;
         NcmStorageId m_destStorageId = NcmStorageId_SdCard;
+        std::string currentName;
 
         if (ourStorage) m_destStorageId = NcmStorageId_BuiltInUser;
         unsigned int fileItr;
+        inst::diag::StartSession("usb", ourTitleList.size());
 
         std::vector<std::string> fileNames;
         for (long unsigned int i = 0; i < ourTitleList.size(); i++) {
@@ -112,7 +115,9 @@ namespace usbInstStuff {
 
         try {
             for (fileItr = 0; fileItr < ourTitleList.size(); fileItr++) {
-                inst::ui::instPage::setTopInstInfoText("inst.info_page.top_info0"_lang + fileNames[fileItr] + "inst.usb.source_string"_lang);
+                currentName = fileNames[fileItr];
+                inst::diag::NoteTransferReceived(currentName);
+                inst::ui::instPage::setTopInstInfoText("inst.info_page.top_info0"_lang + currentName + "inst.usb.source_string"_lang);
                 std::unique_ptr<tin::install::Install> installTask;
 
                 if (ourTitleList[fileItr].compare(ourTitleList[fileItr].size() - 3, 2, "xc") == 0) {
@@ -124,25 +129,37 @@ namespace usbInstStuff {
                 }
 
                 LOG_DEBUG("%s\n", "Preparing installation");
-                inst::ui::instPage::setInstInfoText("inst.info_page.preparing"_lang);
+                inst::ui::instPage::setInstInfoText("Transfer received. Install started...");
                 inst::ui::instPage::setInstBarPerc(0);
+                inst::diag::NoteInstallStarted(currentName);
                 installTask->Prepare();
 
                 installTask->Begin();
+                inst::diag::RecordSuccess(currentName);
+                inst::ui::instPage::setInstInfoText("Install succeeded: " + currentName);
             }
         }
         catch (std::exception& e) {
             LOG_DEBUG("Failed to install");
             LOG_DEBUG("%s", e.what());
             fprintf(stdout, "%s", e.what());
-            inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + fileNames[fileItr]);
+            const std::string failedName = currentName.empty()
+                ? (fileNames.empty() ? std::string("unknown item") : fileNames.front())
+                : currentName;
+            const auto failure = inst::diag::ClassifyFailure(e.what());
+            inst::diag::RecordFailure(failedName, failure);
+            inst::ui::instPage::setInstInfoText(failure.canceled ? "Installation canceled." : ("inst.info_page.failed"_lang + failedName));
             inst::ui::instPage::setInstBarPerc(0);
-            std::string audioPath = "romfs:/audio/bark.wav";
-            if (!inst::config::soundEnabled) audioPath = "";
-            if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
-            std::thread audioThread(inst::util::playAudio,audioPath);
-            inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + fileNames[fileItr] + "!", "inst.info_page.failed_desc"_lang + "\n\n" + (std::string)e.what(), {"common.ok"_lang}, true);
-            audioThread.join();
+            if (!failure.canceled) {
+                std::string audioPath = "romfs:/audio/bark.wav";
+                if (!inst::config::soundEnabled) audioPath = "";
+                if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
+                std::thread audioThread(inst::util::playAudio,audioPath);
+                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
+                audioThread.join();
+            } else {
+                inst::ui::mainApp->CreateShowDialog("Canceled", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
+            }
             nspInstalled = false;
         }
 

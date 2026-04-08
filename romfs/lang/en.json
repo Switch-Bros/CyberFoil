@@ -95,7 +95,7 @@
             "source_string": " from eShop",
             "buttons_loading": " Cancel",
             "buttons": " Select File     Select All     Install File(s)     Refresh    / Section     View     Cancel",
-            "buttons_all": " Select File     Select All     Install File(s)     Refresh    / Section     Search     View     Cancel",
+            "buttons_all": " Select File     Select All     Install File(s)     Refresh    / Section     Search     View     Cancel",
             "search_hint": "Search all titles",
             "update_prompt_title": "Install updates?",
             "update_prompt_desc": "Include available updates for selected titles? Updates found: ",

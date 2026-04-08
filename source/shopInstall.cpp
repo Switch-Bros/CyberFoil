@@ -2,6 +2,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <curl/curl.h>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,7 @@
 #include "util/curl.hpp"
 #include "util/error.hpp"
 #include "util/hauth.hpp"
+#include "util/install_diagnostics.hpp"
 #include "util/json.hpp"
 #include "util/lang.hpp"
 #include "util/network_util.hpp"
@@ -129,7 +131,7 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl)
+    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl, const std::string& user, const std::string& pass)
     {
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
@@ -139,6 +141,7 @@ namespace {
         std::string revisionHeader = "Revision: " + revisionValue;
         std::string languageHeader = "Language: " + Language::GetShopHeaderLanguage();
         std::string hauthHeader = "HAUTH: " + inst::util::ComputeHauthFromUrl(requestUrl);
+        std::string uauthHeader = "UAUTH: " + inst::util::ComputeUauthFromUrl(requestUrl, user, pass);
         std::string uidHeader = "UID: " + inst::util::ComputeUidFromMmcCid();
         return {
             themeHeader,
@@ -147,7 +150,7 @@ namespace {
             revisionHeader,
             languageHeader,
             hauthHeader,
-            "UAUTH: 0"
+            uauthHeader
         };
     }
 
@@ -273,56 +276,6 @@ namespace {
             inst::ui::instPage::clearInstallIcon();
     }
 
-    constexpr int kShopCacheTtlSeconds = 300;
-
-    std::string GetShopCachePath(const std::string& baseUrl)
-    {
-        std::size_t hash = std::hash<std::string>{}(baseUrl);
-        return inst::config::appDir + "/shop_cache_" + std::to_string(hash) + ".json";
-    }
-
-    bool LoadShopCache(const std::string& baseUrl, std::string& body, bool& fresh)
-    {
-        fresh = false;
-        std::string path = GetShopCachePath(baseUrl);
-        if (!std::filesystem::exists(path))
-            return false;
-
-        std::ifstream in(path, std::ios::binary);
-        if (!in)
-            return false;
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        body = ss.str();
-        if (body.empty())
-            return false;
-
-        auto ftime = std::filesystem::last_write_time(path);
-        auto now = std::chrono::system_clock::now();
-        auto ftime_sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            ftime - std::filesystem::file_time_type::clock::now() + now);
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - ftime_sys).count();
-        fresh = age >= 0 && age <= kShopCacheTtlSeconds;
-        return true;
-    }
-
-    void SaveShopCache(const std::string& baseUrl, const std::string& body)
-    {
-        if (body.empty())
-            return;
-        std::string path = GetShopCachePath(baseUrl);
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out)
-            return;
-        out << body;
-    }
-
-    std::string GetShopPrefetchMarker(const std::string& baseUrl)
-    {
-        std::size_t hash = std::hash<std::string>{}(baseUrl);
-        return inst::config::appDir + "/shop_icons_prefetch_" + std::to_string(hash) + ".done";
-    }
-
     bool TryParseTitleId(const nlohmann::json& entry, std::uint64_t& out);
     bool TryParseAppVersion(const nlohmann::json& entry, std::uint32_t& out);
     bool TryParseAppType(const nlohmann::json& entry, std::int32_t& out);
@@ -418,6 +371,66 @@ namespace {
                 return false;
             out = static_cast<std::uint32_t>(parsed);
             return true;
+        }
+        return false;
+    }
+
+    bool TryParseReleaseDateText(const std::string& text, std::uint32_t& out)
+    {
+        std::string digits;
+        digits.reserve(text.size());
+        for (unsigned char c : text) {
+            if (std::isdigit(c))
+                digits.push_back(static_cast<char>(c));
+        }
+        if (digits.size() >= 8) {
+            const std::string yyyymmdd = digits.substr(0, 8);
+            out = static_cast<std::uint32_t>(std::strtoul(yyyymmdd.c_str(), nullptr, 10));
+            return out != 0;
+        }
+        return false;
+    }
+
+    bool TryParseReleaseDate(const nlohmann::json& entry, std::uint32_t& out)
+    {
+        static const char* kKeys[] = {
+            "release_date",
+            "releaseDate",
+            "release",
+            "date"
+        };
+
+        for (const char* key : kKeys) {
+            if (!entry.contains(key))
+                continue;
+            const auto& value = entry[key];
+            if (value.is_number_unsigned()) {
+                const auto parsed = value.get<std::uint64_t>();
+                if (parsed == 0)
+                    continue;
+                if (parsed >= 10000101ULL) {
+                    out = static_cast<std::uint32_t>(parsed);
+                    return true;
+                }
+                continue;
+            }
+            if (value.is_number_integer()) {
+                const auto parsed = value.get<long long>();
+                if (parsed <= 0)
+                    continue;
+                if (parsed >= 10000101LL) {
+                    out = static_cast<std::uint32_t>(parsed);
+                    return true;
+                }
+                continue;
+            }
+            if (value.is_string()) {
+                std::uint32_t parsed = 0;
+                if (TryParseReleaseDateText(value.get<std::string>(), parsed)) {
+                    out = parsed;
+                    return true;
+                }
+            }
         }
         return false;
     }
@@ -755,6 +768,10 @@ namespace {
                 item.appVersion = meta.version;
                 item.hasAppVersion = true;
             }
+            if (!item.hasReleaseDate && meta.hasReleaseDate && meta.releaseDate > 0) {
+                item.releaseDate = meta.releaseDate;
+                item.hasReleaseDate = true;
+            }
         }
 
     }
@@ -829,6 +846,11 @@ namespace {
                         if (TryParseAppVersion(entry, appVersion)) {
                             item.appVersion = appVersion;
                             item.hasAppVersion = true;
+                        }
+                        std::uint32_t releaseDate = 0;
+                        if (TryParseReleaseDate(entry, releaseDate)) {
+                            item.releaseDate = releaseDate;
+                            item.hasReleaseDate = true;
                         }
                         if (TryParseAppType(entry, appType))
                             item.appType = appType;
@@ -977,7 +999,7 @@ namespace shopInstStuff {
         }
 
         struct curl_slist* headerList = nullptr;
-        const auto headers = BuildTinfoilHeaders(url);
+        const auto headers = BuildTinfoilHeaders(url, user, pass);
         for (const auto& header : headers)
             headerList = curl_slist_append(headerList, header.c_str());
         if (headerList)
@@ -1100,6 +1122,11 @@ namespace shopInstStuff {
                     item.url = fullUrl;
                     item.size = size;
                     ApplyLegacyMetadataFromName(name, item);
+                    std::uint32_t releaseDate = 0;
+                    if (TryParseReleaseDate(entry, releaseDate)) {
+                        item.releaseDate = releaseDate;
+                        item.hasReleaseDate = true;
+                    }
 
                     if (entry.contains("icon_url") && entry["icon_url"].is_string()) {
                         std::string iconUrl = entry["icon_url"].get<std::string>();
@@ -1169,7 +1196,7 @@ namespace shopInstStuff {
         return items;
     }
 
-    std::vector<ShopSection> FetchShopSections(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, bool allowCache, bool* outUsedLegacyFallback, const ShopFetchProgressCallback& progressCb)
+    std::vector<ShopSection> FetchShopSections(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, bool* outUsedLegacyFallback, const ShopFetchProgressCallback& progressCb)
     {
         std::vector<ShopSection> sections;
         error.clear();
@@ -1212,45 +1239,13 @@ namespace shopInstStuff {
             }
             if (tryLegacyFallback())
                 return sections;
-            if (allowCache) {
-                std::string cachedBody;
-                bool fresh = false;
-                if (LoadShopCache(baseUrl, cachedBody, fresh)) {
-                    std::string cacheError;
-                    sections = ParseShopSectionsBody(cachedBody, baseUrl, cacheError);
-                    if (!sections.empty()) {
-                        error.clear();
-                        return sections;
-                    }
-                }
-            }
             return sections;
         }
 
         sections = ParseShopSectionsBody(fetch.body, baseUrl, error);
         if (sections.empty() && !error.empty() && tryLegacyFallback())
             return sections;
-        if (!sections.empty())
-            SaveShopCache(baseUrl, fetch.body);
         return sections;
-    }
-
-    void ResetShopIconCache(const std::string& shopUrl)
-    {
-        std::string baseUrl = NormalizeShopUrl(shopUrl);
-        if (baseUrl.empty())
-            return;
-        std::string marker = GetShopPrefetchMarker(baseUrl);
-        std::error_code ec;
-        if (std::filesystem::exists(marker, ec))
-            std::filesystem::remove(marker, ec);
-        std::string cacheDir = inst::config::appDir + "/shop_icons";
-        if (std::filesystem::exists(cacheDir, ec)) {
-            for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec)) {
-                if (entry.is_regular_file())
-                    std::filesystem::remove(entry.path(), ec);
-            }
-        }
     }
 
     namespace {
@@ -1647,6 +1642,7 @@ namespace shopInstStuff {
         inst::ui::instPage::loadInstallScreen();
         bool nspInstalled = true;
         NcmStorageId destStorageId = storage ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
+        inst::diag::StartSession("shop", items.size());
 
         std::vector<std::string> names;
         names.reserve(items.size());
@@ -1670,15 +1666,18 @@ namespace shopInstStuff {
             for (size_t i = 0; i < items.size(); i++) {
                 LOG_DEBUG("%s %s\n", "Install request from", items[i].url.c_str());
                 currentName = names[i];
+                inst::diag::NoteTransferReceived(currentName);
                 UpdateInstallIcon(items[i]);
                 inst::ui::instPage::setTopInstInfoText("inst.info_page.top_info0"_lang + currentName + sourceLabel);
                 std::unique_ptr<tin::install::Install> installTask;
                 bool isXci = IsXciExtension(items[i].name) || IsXciExtension(items[i].url) || IsXciMagic(items[i].url);
                 if (isXci) {
-                    inst::ui::instPage::setInstInfoText("inst.info_page.preparing"_lang);
+                    inst::ui::instPage::setInstInfoText("Transfer received. Install started...");
+                    inst::diag::NoteInstallStarted(currentName);
                     if (!InstallXciHttpStream(items[i].url, destStorageId)) {
                         THROW_FORMAT("Failed to install XCI from shop.");
                     }
+                    inst::diag::RecordSuccess(currentName);
                     continue;
                 } else {
                     auto httpNSP = std::make_shared<tin::install::nsp::HTTPNSP>(items[i].url);
@@ -1686,10 +1685,13 @@ namespace shopInstStuff {
                 }
 
                 LOG_DEBUG("%s\n", "Preparing installation");
-                inst::ui::instPage::setInstInfoText("inst.info_page.preparing"_lang);
+                inst::ui::instPage::setInstInfoText("Transfer received. Install started...");
                 inst::ui::instPage::setInstBarPerc(0);
+                inst::diag::NoteInstallStarted(currentName);
                 installTask->Prepare();
                 installTask->Begin();
+                inst::diag::RecordSuccess(currentName);
+                inst::ui::instPage::setInstInfoText("Install succeeded: " + currentName);
             }
         }
         catch (std::exception& e) {
@@ -1698,11 +1700,12 @@ namespace shopInstStuff {
             fprintf(stdout, "%s", e.what());
             std::string failedName = currentName.empty() ? names.front() : currentName;
             const std::string errorText = e.what();
-            const bool canceled = errorText.find("Installation canceled.") != std::string::npos;
-            if (canceled) {
+            const auto failure = inst::diag::ClassifyFailure(errorText);
+            inst::diag::RecordFailure(failedName, failure);
+            if (failure.canceled) {
                 inst::ui::instPage::setInstInfoText("Installation canceled.");
                 inst::ui::instPage::setInstBarPerc(0);
-                inst::ui::mainApp->CreateShowDialog("Canceled", "Installation canceled by user.", {"common.ok"_lang}, true);
+                inst::ui::mainApp->CreateShowDialog("Canceled", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
             } else {
                 inst::ui::instPage::setInstInfoText("inst.info_page.failed"_lang + failedName);
                 inst::ui::instPage::setInstBarPerc(0);
@@ -1710,7 +1713,7 @@ namespace shopInstStuff {
                 if (!inst::config::soundEnabled) audioPath = "";
                 if (std::filesystem::exists(inst::config::appDir + "/bark.wav")) audioPath = inst::config::appDir + "/bark.wav";
                 std::thread audioThread(inst::util::playAudio, audioPath);
-                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", "inst.info_page.failed_desc"_lang + "\n\n" + errorText, {"common.ok"_lang}, true);
+                inst::ui::mainApp->CreateShowDialog("inst.info_page.failed"_lang + failedName + "!", inst::diag::BuildUserMessage(failure), {"common.ok"_lang}, true);
                 audioThread.join();
             }
             nspInstalled = false;

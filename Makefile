@@ -53,7 +53,16 @@ INCLUDES	:=	include include/ui include/data include/install include/nx include/n
 				$(PLUTONIUM_INCLUDE_SWITCH) $(PLUTONIUM_INCLUDE_OUTPUT) $(PLUTONIUM_INCLUDE_SOURCE) external/libhaze/include
 APP_TITLE	:=	CyberFoil
 APP_AUTHOR	:=	luketanti
-APP_VERSION	:=	1.4.2
+APP_VERSION	:=	1.4.3
+GIT_COMMIT	:=	$(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git rev-parse --short=8 HEAD 2>/dev/null; else echo nogit; fi)
+GIT_STATUS	:=	$(shell if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then if git diff --quiet --ignore-submodules HEAD -- 2>/dev/null && git diff --cached --quiet --ignore-submodules HEAD -- 2>/dev/null; then echo clean; else echo dirty; fi; else echo nogit; fi)
+ifeq ($(RELEASE),1)
+APP_GIT_META :=
+APP_VERSION_FULL := $(APP_VERSION)
+else
+APP_GIT_META := $(GIT_COMMIT).$(GIT_STATUS)
+APP_VERSION_FULL := $(APP_VERSION)+$(GIT_COMMIT).$(GIT_STATUS)
+endif
 ICON		:=	romfs/images/icon.jpg
 ROMFS		:=	romfs
 
@@ -61,8 +70,16 @@ ROMFS		:=	romfs
 # options for code generation
 #---------------------------------------------------------------------------------
 DEFINES	+=	-DAPP_VERSION=\"$(APP_VERSION)\"
+DEFINES	+=	-DAPP_GIT_META=\"$(APP_GIT_META)\"
+DEFINES	+=	-DAPP_VERSION_FULL=\"$(APP_VERSION_FULL)\"
 ifneq ($(strip $(HAUTH_SEED_OBF_HEX)),)
 DEFINES += -DHAUTH_SEED_OBF_HEX=\"$(HAUTH_SEED_OBF_HEX)\"
+endif
+ifneq ($(strip $(EMBEDDED_SHOP_KEY_OBF_HEX)),)
+DEFINES += -DEMBEDDED_SHOP_KEY_OBF_HEX=\"$(EMBEDDED_SHOP_KEY_OBF_HEX)\"
+endif
+ifeq ($(DEBUG),1)
+DEFINES += -DAPP_DEBUG_LOG
 endif
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
@@ -72,7 +89,7 @@ CFLAGS	+=	 `curl-config --cflags`
 CFLAGS	+=	 `sdl2-config --cflags`
 CFLAGS	+=	`$(PREFIX)pkg-config --cflags libturbojpeg freetype2`
 
-CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DGPL_BUILD -Wall #-Werror -D__DEBUG__ -DNXLINK_DEBUG
+CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DGPL_BUILD -Wall #-Werror -D__DEBUG__
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -std=gnu++20
 
