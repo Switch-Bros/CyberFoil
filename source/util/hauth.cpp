@@ -1,13 +1,14 @@
 #include "util/hauth.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cctype>
 #include <string>
 
 extern "C" {
-    bool z9f2(const void* authInput, std::size_t authInputLen, std::string& outAuthHex) __attribute__((weak));
-    bool z9f3(const void* authInput, std::size_t authInputLen, std::string& outAuthHex) __attribute__((weak));
+    bool z9f2(const void* authInput, std::size_t authInputLen, char* outAuthHex, std::size_t outAuthHexCap, std::size_t* outAuthHexLen) __attribute__((weak));
+    bool z9f3(const void* authInput, std::size_t authInputLen, char* outAuthHex, std::size_t outAuthHexCap, std::size_t* outAuthHexLen) __attribute__((weak));
 }
 
 namespace {
@@ -175,14 +176,15 @@ namespace {
         std::string msg = authInput;
         msg.push_back('\0');
 
-        std::string authHex;
+        std::array<char, 65> authHex{};
+        std::size_t authHexLen = 0;
         const bool loaded = useUauthSeed
-            ? (z9f3 != nullptr && z9f3(msg.data(), msg.size(), authHex))
-            : (z9f2 != nullptr && z9f2(msg.data(), msg.size(), authHex));
+            ? (z9f3 != nullptr && z9f3(msg.data(), msg.size(), authHex.data(), authHex.size(), &authHexLen))
+            : (z9f2 != nullptr && z9f2(msg.data(), msg.size(), authHex.data(), authHex.size(), &authHexLen));
 
-        if (!loaded || authHex.empty())
+        if (!loaded || authHexLen == 0 || authHexLen >= authHex.size())
             return "0";
-        return authHex;
+        return std::string(authHex.data(), authHexLen);
     }
 }
 
