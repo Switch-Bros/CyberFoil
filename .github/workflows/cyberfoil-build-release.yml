@@ -26,8 +26,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${BLOB_REPO_TOKEN:-}" ]; then
-            echo "ERROR: Missing secret BLOB_REPO_TOKEN"
-            exit 1
+            echo "WARNING: Missing secret BLOB_REPO_TOKEN; continuing without prebuilt/lib.a"
+            exit 0
           fi
 
           owner="${GITHUB_REPOSITORY_OWNER}"
@@ -42,8 +42,8 @@ jobs:
 
           asset_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); n="lib.a"; print(next((str(a["id"]) for a in d.get("assets",[]) if a.get("name")==n), ""))' <<< "${release_json}")"
           if [ -z "${asset_id}" ]; then
-            echo "ERROR: Asset ${asset_name} not found in latest ${blob_repo} release"
-            exit 1
+            echo "WARNING: Asset ${asset_name} not found in latest ${blob_repo} release; continuing without prebuilt/lib.a"
+            exit 0
           fi
 
           mkdir -p prebuilt
@@ -54,8 +54,8 @@ jobs:
             -o prebuilt/lib.a
 
           if [ ! -s prebuilt/lib.a ]; then
-            echo "ERROR: Downloaded prebuilt/lib.a is missing or empty"
-            exit 1
+            echo "WARNING: Downloaded prebuilt/lib.a is missing or empty; continuing without prebuilt/lib.a"
+            rm -f prebuilt/lib.a
           fi
 
       - name: Build + verify expected NRO name/location
