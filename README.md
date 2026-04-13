@@ -6,9 +6,10 @@
 
 ## Features
 - Simple homebrew file installer
+- Works best with AeroFoil
 - Save Data Backup manager: browse console/server saves, upload with notes, download specific own save data versions, and delete save data files from server
 
-## Save Sync
+## Save Sync (Only works with compatible AeroFoil)
 - Available when the account has backup access.
 - Shows local console saves and remote server save data backups in a dedicated `Saves` section.
 - Upload supports version notes.

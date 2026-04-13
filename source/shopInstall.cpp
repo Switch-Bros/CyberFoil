@@ -1401,7 +1401,11 @@ namespace shopInstStuff {
             return false;
         }
         if (IsLoginUrl(fetch.effectiveUrl.c_str()) || (!fetch.contentType.empty() && fetch.contentType.find("text/html") != std::string::npos) || ContainsHtml(fetch.body)) {
-            error = "eShop returned the login page. Check shop URL, username, and password, or enable public shop.";
+            if (inst::config::shopLegacyMode && !inst::util::HasLegacyAuthSupport()) {
+                error = "This build does not support this shop";
+            } else {
+                error = "eShop returned the login page. Check shop URL, username, and password, or enable public shop.";
+            }
             return false;
         }
         return true;

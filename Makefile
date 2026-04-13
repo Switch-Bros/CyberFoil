@@ -89,11 +89,23 @@ CFLAGS	+=	`$(PREFIX)pkg-config --cflags libturbojpeg freetype2`
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DGPL_BUILD -Wall #-Werror -D__DEBUG__
 
+ifeq ($(RELEASE),1)
+CFLAGS	:=	$(filter-out -g,$(CFLAGS))
+CFLAGS	+=	-g0 -DNDEBUG -fdata-sections
+endif
+
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -std=gnu++20
 
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+
+ifeq ($(RELEASE),1)
+ASFLAGS	:=	$(filter-out -g,$(ASFLAGS))
+ASFLAGS	+=	-g0
+LDFLAGS	:=	$(filter-out -g,$(LDFLAGS))
+LDFLAGS	+=	-Wl,--gc-sections
+endif
 
 LIBS	:=  `curl-config --libs` # Networking
 LIBS	+=	-lSDL2_mixer -lopusfile -lopus -lmodplug -lmpg123 -lvorbisidec -logg # Audio
