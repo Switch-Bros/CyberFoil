@@ -79,7 +79,6 @@ namespace tin::install::xci
     {
         const HFS0FileEntry* fileEntry = m_xci->GetFileEntryByNcaId(ncaId);
         std::string ncaFileName = m_xci->GetFileEntryName(fileEntry);
-        size_t ncaSize = fileEntry->fileSize;
         LOG_DEBUG("Installing %s to storage Id %u\n", ncaFileName.c_str(), m_destStorageId);
 
         std::shared_ptr<nx::ncm::ContentStorage> contentStorage(new nx::ncm::ContentStorage(m_destStorageId));
@@ -90,7 +89,7 @@ namespace tin::install::xci
         }
         catch (...) {}
 
-        LOG_DEBUG("Size: 0x%lx\n", ncaSize);
+        LOG_DEBUG("Size: 0x%lx\n", fileEntry->fileSize);
 
         try {
             if (inst::config::validateNCAs && !m_declinedValidation)
