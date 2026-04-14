@@ -288,6 +288,7 @@ namespace netInstStuff{
                 }
 
                 // Break on input pressed
+                inst::ui::mainApp->RefreshInputDevice();
                 inst::ui::mainApp->UpdateButtons();
                 u64 kDown = inst::ui::mainApp->GetButtonsDown();
 

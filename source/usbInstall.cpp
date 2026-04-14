@@ -64,6 +64,7 @@ namespace usbInstStuff {
         TUSHeader header;
         while(true) {
             if (bufferData(&header, sizeof(TUSHeader), 500000000) != 0) break;
+            inst::ui::mainApp->RefreshInputDevice();
             inst::ui::mainApp->UpdateButtons();
             u64 kDown = inst::ui::mainApp->GetButtonsDown();
             if (kDown & HidNpadButton_B) return {};
