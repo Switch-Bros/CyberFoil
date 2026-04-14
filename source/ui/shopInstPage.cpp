@@ -3125,7 +3125,15 @@ namespace inst::ui {
         }
 
         if (!this->menu->GetItems().empty()) {
-            this->menu->SetSelectedIndex(restoredIndex);
+            const int maxIndex = static_cast<int>(this->menu->GetItems().size()) - 1;
+            if (restoredIndex > maxIndex)
+                restoredIndex = maxIndex;
+            if (restoredIndex < 0)
+                restoredIndex = 0;
+
+            // Avoid resetting the menu's internal top row when the same item remains selected.
+            if (restoredIndex != previousSelectionIndex || previousSelectionKey.empty())
+                this->menu->SetSelectedIndex(restoredIndex);
         }
         this->shopGridIndex = restoredIndex;
         this->gridSelectedIndex = restoredIndex;
