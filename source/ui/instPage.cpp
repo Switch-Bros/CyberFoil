@@ -7,6 +7,7 @@
 #include "ui/instPage.hpp"
 #include "util/util.hpp"
 #include "util/config.hpp"
+#include "mtp_install.hpp"
 #include "mtp_server.hpp"
 #include "ui/bottomHint.hpp"
 #include <switch.h>
@@ -371,7 +372,10 @@ namespace inst::ui {
         }
         inst::util::playNavigationClickIfNeeded(Down);
         if (Down & HidNpadButton_B) {
-            if (this->installBar->IsVisible()) {
+            const bool mtpWaitingAfterComplete =
+                inst::mtp::IsInstallServerRunning() && !inst::mtp::IsStreamInstallActive() && this->hintText->IsVisible();
+
+            if (this->installBar->IsVisible() && !mtpWaitingAfterComplete) {
                 if (isInstallCancelRequested()) {
                     setInstInfoText("Cancelling install...");
                     return;
