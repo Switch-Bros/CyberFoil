@@ -83,7 +83,7 @@ namespace inst::ui {
         return FormatOneDecimal(mib) + " MiB";
     }
 
-    void MainApplication::RefreshInputDevice() {
+    void MainApplication::RefreshInputDevice(bool force) {
         const AppletFocusState focus = appletGetFocusState();
         const bool regainedFocus = (focus != this->lastFocusState) && (focus == AppletFocusState_InFocus);
         this->lastFocusState = focus;
@@ -91,7 +91,7 @@ namespace inst::ui {
         if (focus != AppletFocusState_InFocus)
             return;
 
-        if (regainedFocus || !padIsConnected(&this->input_pad)) {
+        if (force || regainedFocus || !padIsConnected(&this->input_pad)) {
             padConfigureInput(1, HidNpadStyleSet_NpadStandard);
             padInitializeDefault(&this->input_pad);
         }

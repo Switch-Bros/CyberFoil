@@ -270,6 +270,8 @@ namespace inst::util {
             swkbdConfigSetStringLenMax(&kbd, LenMax);
             rc = swkbdShow(&kbd, tmpoutstr, sizeof(tmpoutstr));
             swkbdClose(&kbd);
+            if (inst::ui::mainApp != nullptr)
+                inst::ui::mainApp->RefreshInputDevice(true);
             if (R_SUCCEEDED(rc) && tmpoutstr[0] != 0) return(((std::string)(tmpoutstr)));
         }
         return "";
