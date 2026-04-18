@@ -95,18 +95,44 @@ namespace {
         return url;
     }
 
+    int HexNibble(char c)
+    {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F')
+            return 10 + (c - 'A');
+        return -1;
+    }
+
     std::string DecodeUrlSegment(const std::string& value)
     {
-        CURL* curl = curl_easy_init();
-        if (!curl)
-            return value;
-        int outLength = 0;
-        char* decoded = curl_easy_unescape(curl, value.c_str(), value.size(), &outLength);
-        std::string result = decoded ? std::string(decoded, outLength) : value;
-        if (decoded)
-            curl_free(decoded);
-        curl_easy_cleanup(curl);
-        return result;
+        std::string out;
+        out.reserve(value.size());
+
+        for (std::size_t i = 0; i < value.size(); i++) {
+            const char c = value[i];
+            if (c == '%' && (i + 2) < value.size()) {
+                const int hi = HexNibble(value[i + 1]);
+                const int lo = HexNibble(value[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // Keep compatibility with common form-style encoding for display names.
+            if (c == '+') {
+                out.push_back(' ');
+                continue;
+            }
+
+            out.push_back(c);
+        }
+
+        return out;
     }
 
     bool IsLikelyLegacyPayloadAt(const std::string& body, std::size_t offset)
@@ -1297,84 +1323,150 @@ namespace shopInstStuff {
         std::string contentType;
         std::string error;
         std::string decodeError;
+        CURLcode curlCode = CURLE_OK;
     };
+
+    namespace {
+        constexpr long kShopRequestTimeoutMs = 30000L;
+        constexpr long kShopConnectTimeoutMs = 10000L;
+        constexpr int kShopFetchMaxAttempts = 4;
+
+        bool IsRetriableHttpCode(long responseCode)
+        {
+            return responseCode == 408 ||
+                responseCode == 425 ||
+                responseCode == 429 ||
+                responseCode == 500 ||
+                responseCode == 502 ||
+                responseCode == 503 ||
+                responseCode == 504;
+        }
+
+        bool IsRetriableCurlCode(CURLcode code)
+        {
+            switch (code) {
+                case CURLE_COULDNT_RESOLVE_HOST:
+                case CURLE_COULDNT_RESOLVE_PROXY:
+                case CURLE_COULDNT_CONNECT:
+                case CURLE_OPERATION_TIMEDOUT:
+                case CURLE_SEND_ERROR:
+                case CURLE_RECV_ERROR:
+                case CURLE_GOT_NOTHING:
+                case CURLE_SSL_CONNECT_ERROR:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        bool ShouldRetryShopFetch(const FetchResult& result)
+        {
+            if (result.curlCode != CURLE_OK)
+                return IsRetriableCurlCode(result.curlCode);
+            return IsRetriableHttpCode(result.responseCode);
+        }
+
+        std::uint32_t ShopRetryDelayMs(int attemptIndex)
+        {
+            // attemptIndex is 0-based for retries after the first try.
+            static constexpr std::uint32_t kBackoffMs[kShopFetchMaxAttempts - 1] = {450, 1000, 1800};
+            if (attemptIndex < 0)
+                return kBackoffMs[0];
+            if (attemptIndex >= static_cast<int>(sizeof(kBackoffMs) / sizeof(kBackoffMs[0])))
+                return kBackoffMs[(sizeof(kBackoffMs) / sizeof(kBackoffMs[0])) - 1];
+            return kBackoffMs[attemptIndex];
+        }
+    }
 
     FetchResult FetchShopResponse(const std::string& url, const std::string& user, const std::string& pass, const ShopFetchProgressCallback& progressCb = ShopFetchProgressCallback())
     {
-        FetchResult result;
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            result.error = "Failed to initialize curl.";
-            return result;
+        FetchResult lastResult;
+
+        for (int attempt = 0; attempt < kShopFetchMaxAttempts; attempt++) {
+            FetchResult result;
+            CURL* curl = curl_easy_init();
+            if (!curl) {
+                result.error = "Failed to initialize curl.";
+                return result;
+            }
+
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            const std::string userAgent = inst::config::shopLegacyMode ? std::string() : inst::curl::getDefaultUserAgent();
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, kShopRequestTimeoutMs);
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, kShopConnectTimeoutMs);
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+
+            ShopFetchProgressContext progressCtx{};
+            if (progressCb) {
+                progressCtx.cb = &progressCb;
+                curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+                curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, ShopFetchProgressHandler);
+                curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressCtx);
+            }
+
+            struct curl_slist* headerList = nullptr;
+            const auto headers = BuildLegacyHeaders(url, user, pass);
+            for (const auto& header : headers)
+                headerList = curl_slist_append(headerList, header.c_str());
+            if (headerList)
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
+
+            std::string authValue;
+            if (!user.empty() || !pass.empty()) {
+                authValue = user + ":" + pass;
+                curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+                curl_easy_setopt(curl, CURLOPT_USERPWD, authValue.c_str());
+            }
+
+            const CURLcode rc = curl_easy_perform(curl);
+            result.curlCode = rc;
+
+            long responseCode = 0;
+            char* effectiveUrl = nullptr;
+            char* contentType = nullptr;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
+            curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effectiveUrl);
+            curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &contentType);
+            if (headerList)
+                curl_slist_free_all(headerList);
+            curl_easy_cleanup(curl);
+
+            result.responseCode = responseCode;
+            result.effectiveUrl = effectiveUrl ? effectiveUrl : "";
+            result.contentType = contentType ? contentType : "";
+
+            if (rc != CURLE_OK) {
+                result.error = std::string(curl_easy_strerror(rc)) + " (curl=" + std::to_string(static_cast<int>(rc)) + ")";
+            } else if (progressCb) {
+                const std::uint64_t bodySize = static_cast<std::uint64_t>(result.body.size());
+                progressCb(bodySize, bodySize);
+            }
+
+            std::size_t legacyOffset = std::string::npos;
+            if (result.error.empty() && FindLegacyPayloadOffset(result.body, legacyOffset)) {
+                std::string decodedBody;
+                std::string decodeError;
+                const std::string legacyBody = (legacyOffset == 0) ? result.body : result.body.substr(legacyOffset);
+                if (DecodeLegacyPayload(legacyBody, decodedBody, decodeError))
+                    result.body = std::move(decodedBody);
+                else
+                    result.decodeError = std::move(decodeError);
+            }
+
+            const bool canRetry = (attempt + 1) < kShopFetchMaxAttempts && ShouldRetryShopFetch(result);
+            if (!canRetry)
+                return result;
+
+            lastResult = result;
+            std::this_thread::sleep_for(std::chrono::milliseconds(ShopRetryDelayMs(attempt)));
         }
 
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        const std::string userAgent = inst::config::shopLegacyMode ? std::string() : inst::curl::getDefaultUserAgent();
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
-
-        ShopFetchProgressContext progressCtx{};
-        if (progressCb) {
-            progressCtx.cb = &progressCb;
-            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, ShopFetchProgressHandler);
-            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressCtx);
-        }
-
-        struct curl_slist* headerList = nullptr;
-        const auto headers = BuildLegacyHeaders(url, user, pass);
-        for (const auto& header : headers)
-            headerList = curl_slist_append(headerList, header.c_str());
-        if (headerList)
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
-
-        std::string authValue;
-        if (!user.empty() || !pass.empty()) {
-            authValue = user + ":" + pass;
-            curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-            curl_easy_setopt(curl, CURLOPT_USERPWD, authValue.c_str());
-        }
-
-        CURLcode rc = curl_easy_perform(curl);
-        long responseCode = 0;
-        char* effectiveUrl = nullptr;
-        char* contentType = nullptr;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
-        curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effectiveUrl);
-        curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &contentType);
-        if (headerList)
-            curl_slist_free_all(headerList);
-        curl_easy_cleanup(curl);
-
-        result.responseCode = responseCode;
-        result.effectiveUrl = effectiveUrl ? effectiveUrl : "";
-        result.contentType = contentType ? contentType : "";
-
-        if (rc != CURLE_OK) {
-            result.error = curl_easy_strerror(rc);
-        } else if (progressCb) {
-            const std::uint64_t bodySize = static_cast<std::uint64_t>(result.body.size());
-            progressCb(bodySize, bodySize);
-        }
-
-        std::size_t legacyOffset = std::string::npos;
-        if (result.error.empty() && FindLegacyPayloadOffset(result.body, legacyOffset)) {
-            std::string decodedBody;
-            std::string decodeError;
-            const std::string legacyBody = (legacyOffset == 0) ? result.body : result.body.substr(legacyOffset);
-            if (DecodeLegacyPayload(legacyBody, decodedBody, decodeError))
-                result.body = std::move(decodedBody);
-            else
-                result.decodeError = std::move(decodeError);
-        }
-
-        return result;
+        return lastResult;
     }
 
     bool ValidateShopResponse(const FetchResult& fetch, std::string& error)
@@ -1758,7 +1850,9 @@ namespace shopInstStuff {
 
         if (!ValidateShopResponse(fetch, error)) {
             if (!fetch.error.empty()) {
-                error = "inst.shop.unreachable"_lang;
+                error = "inst.shop.unreachable"_lang + "\n" + fetch.error;
+                if (fetch.responseCode > 0)
+                    error += "\nHTTP " + std::to_string(fetch.responseCode);
                 return sections;
             }
             if (tryLegacyFallback())

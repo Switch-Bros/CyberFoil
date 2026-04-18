@@ -73,6 +73,10 @@ namespace inst::ui {
             bool pendingMotdFetch = false;
             bool suppressBottomHints = false;
             std::string activeShopUrl;
+            bool catalogCacheValid = false;
+            bool catalogCacheUsedLegacyFallback = false;
+            std::string catalogCacheKey;
+            std::vector<shopInstStuff::ShopSection> catalogCacheSections;
             BrowseSortMode browseSortMode = BrowseSortMode::Default;
             BottomHintTouchState bottomHintTouch;
             std::vector<BottomHintSegment> bottomHintSegments;
@@ -145,6 +149,8 @@ namespace inst::ui {
             TextBlock::Ref butText;
             Rectangle::Ref loadingBarBack;
             Rectangle::Ref loadingBarFill;
+            Rectangle::Ref loadingStagesBack;
+            TextBlock::Ref loadingStagesText;
             Rectangle::Ref topRect;
             Rectangle::Ref infoRect;
             Rectangle::Ref botRect;
@@ -177,7 +183,14 @@ namespace inst::ui {
             TextBlock::Ref saveVersionSelectorDetailText;
             TextBlock::Ref saveVersionSelectorHintText;
             pu::ui::elm::Menu::Ref saveVersionSelectorMenu;
+            std::string loadingStageLabel;
+            int loadingStageIndex = -1;
+            int loadingSpinnerFrame = 0;
+            u64 loadingSpinnerLastTick = 0;
             void centerPageInfoText();
+            void refreshLoadingStagesText();
+            int mapLoadingStageToIndex(const std::string& stage) const;
+            void setLoadingProgressStage(const std::string& stage);
             void setLoadingProgress(int percent, bool visible);
             void applyAllSectionSort();
             std::string getAllSortModeLabel() const;

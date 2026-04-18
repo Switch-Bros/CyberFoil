@@ -686,9 +686,9 @@ namespace inst::config {
         shopPass.clear();
         httpUserAgentMode = "default";
         httpUserAgent.clear();
-        shopHideInstalled = false;
-        shopHideInstalledSection = false;
-        shopAllBaseOnly = false;
+        shopHideInstalled = true;
+        shopHideInstalledSection = true;
+        shopAllBaseOnly = true;
         shopLegacyMode = false;
         shopStartGridMode = false;
         offlineDbAutoCheckOnStartup = true;
