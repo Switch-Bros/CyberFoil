@@ -925,13 +925,18 @@ namespace inst::ui {
         this->batteryCap = Rectangle::New(0, 0, 3, 6, COLOR("#FFFFFF66"));
         this->pageInfoText = TextBlock::New(10, 81, "", 34);
         this->pageInfoText->SetColor(COLOR("#FFFFFFFF"));
-        this->loadingProgressText = TextBlock::New(0, 548, "", 18);
+        this->loadingProgressText = TextBlock::New(0, 504, "", 24);
         this->loadingProgressText->SetColor(COLOR("#FFFFFFFF"));
         this->loadingProgressText->SetVisible(false);
-        this->loadingBarBack = Rectangle::New(390, 575, 500, 10, COLOR("#FFFFFF33"));
+        this->loadingBarBack = Rectangle::New(260, 540, 760, 14, COLOR("#FFFFFF33"));
         this->loadingBarBack->SetVisible(false);
-        this->loadingBarFill = Rectangle::New(390, 575, 0, 10, COLOR("#34C759FF"));
+        this->loadingBarFill = Rectangle::New(260, 540, 0, 14, COLOR("#34C759FF"));
         this->loadingBarFill->SetVisible(false);
+        this->loadingStagesBack = Rectangle::New(220, 208, 840, 276, inst::config::oledMode ? COLOR("#101010CC") : COLOR("#170909CC"));
+        this->loadingStagesBack->SetVisible(false);
+        this->loadingStagesText = TextBlock::New(252, 230, "", 24);
+        this->loadingStagesText->SetColor(COLOR("#E9FFF2FF"));
+        this->loadingStagesText->SetVisible(false);
         this->searchInfoText = TextBlock::New(0, 91, "", 20);
         this->searchInfoText->SetColor(COLOR("#FFFFFFFF"));
         this->searchInfoText->SetVisible(false);
@@ -946,7 +951,7 @@ namespace inst::ui {
             this->menu->SetOnFocusColor(COLOR("#00000033"));
             this->menu->SetScrollbarColor(COLOR("#17090980"));
         }
-        this->infoImage = Image::New(453, 292, "romfs:/images/icons/eshop-connection-waiting.png");
+        this->infoImage = Image::New(34, 90, "romfs:/images/icons/eshop-connection-waiting.png");
         this->previewImage = Image::New(900, 230, "romfs:/images/icons/title-placeholder.png");
         this->previewImage->SetWidth(320);
         this->previewImage->SetHeight(320);
@@ -1062,6 +1067,8 @@ namespace inst::ui {
         this->Add(this->loadingProgressText);
         this->Add(this->loadingBarBack);
         this->Add(this->loadingBarFill);
+        this->Add(this->loadingStagesBack);
+        this->Add(this->loadingStagesText);
         this->Add(this->searchInfoText);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
@@ -1334,14 +1341,17 @@ namespace inst::ui {
     }
 
     void shopInstPage::updateSectionText() {
+        this->pageInfoText->SetVisible(true);
         if (this->shopSections.empty()) {
             this->pageInfoText->SetText("inst.shop.loading"_lang);
+            this->pageInfoText->SetY(96);
             CenterTextX(this->pageInfoText);
             this->searchInfoText->SetVisible(false);
             return;
         }
         const auto& section = this->shopSections[this->selectedSectionIndex];
         this->pageInfoText->SetText(section.title);
+        this->pageInfoText->SetY(81);
         CenterTextX(this->pageInfoText);
         std::string rightInfo;
         if (!this->searchQuery.empty()) {
@@ -1371,6 +1381,87 @@ namespace inst::ui {
         }
     }
 
+    void shopInstPage::refreshLoadingStagesText()
+    {
+        static const char* kLoadingStages[] = {
+            "Connect to Shop",
+            "Fetch Catalog",
+            "Parse Response",
+            "Build Sections",
+            "Filter and Sort",
+            "Sync Save Data",
+            "Finalize"
+        };
+        static const char* kSpinnerFrames[] = {
+            "●···",
+            "·●··",
+            "··●·",
+            "···●"
+        };
+        const int spinnerCount = static_cast<int>(sizeof(kSpinnerFrames) / sizeof(kSpinnerFrames[0]));
+        const int spinnerIndex = (spinnerCount > 0) ? (this->loadingSpinnerFrame % spinnerCount) : 0;
+        const char* spinner = (spinnerCount > 0) ? kSpinnerFrames[spinnerIndex] : "|";
+
+        std::string text = "inst.shop.loading"_lang + "\n";
+        text += "--------------------------------\n";
+        for (int i = 0; i < static_cast<int>(sizeof(kLoadingStages) / sizeof(kLoadingStages[0])); i++) {
+            if (i < this->loadingStageIndex) {
+                text += "[\xEE\x85\x8B] ";
+            } else if (i == this->loadingStageIndex) {
+                text += "[";
+                text += spinner;
+                text += "] ";
+            } else {
+                text += "[○] ";
+            }
+
+            if (i + 1 < 10)
+                text += "0";
+            text += std::to_string(i + 1);
+            text += "  ";
+            text += kLoadingStages[i];
+            if (i + 1 < static_cast<int>(sizeof(kLoadingStages) / sizeof(kLoadingStages[0])))
+                text += "\n";
+        }
+        this->loadingStagesText->SetText(text);
+    }
+
+    int shopInstPage::mapLoadingStageToIndex(const std::string& stage) const
+    {
+        if (stage.find("Preparing shop") != std::string::npos)
+            return 0;
+        if (stage.find("Fetching shop list") != std::string::npos
+            || stage.find("Finishing catalog transfer") != std::string::npos)
+            return 1;
+        if (stage.find("Parsing shop response") != std::string::npos)
+            return 2;
+        if (stage.find("Scanning shop sections") != std::string::npos
+            || stage.find("Preparing sections") != std::string::npos
+            || stage.find("Preparing updates section") != std::string::npos
+            || stage.find("Preparing DLC section") != std::string::npos
+            || stage.find("Preparing installed section") != std::string::npos
+            || stage.find("Preparing owned sections") != std::string::npos)
+            return 3;
+        if (stage.find("Checking available updates") != std::string::npos
+            || stage.find("Filtering sections") != std::string::npos
+            || stage.find("Sorting titles") != std::string::npos)
+            return 4;
+        if (stage.find("Preparing save sync") != std::string::npos
+            || stage.find("Loading save sync list") != std::string::npos)
+            return 5;
+        if (stage.find("Finalizing shop") != std::string::npos
+            || stage.find("Shop ready") != std::string::npos)
+            return 6;
+        return -1;
+    }
+
+    void shopInstPage::setLoadingProgressStage(const std::string& stage)
+    {
+        this->loadingStageLabel = stage;
+        this->loadingStageIndex = this->mapLoadingStageToIndex(stage);
+        this->refreshLoadingStagesText();
+    }
+
     void shopInstPage::setLoadingProgress(int percent, bool visible)
     {
         if (percent < 0)
@@ -1381,12 +1472,23 @@ namespace inst::ui {
         this->loadingProgressText->SetVisible(visible);
         this->loadingBarBack->SetVisible(visible);
         this->loadingBarFill->SetVisible(visible);
-        if (!visible)
+        this->loadingStagesBack->SetVisible(visible);
+        this->loadingStagesText->SetVisible(visible);
+        if (!visible) {
+            this->loadingStageIndex = -1;
+            this->loadingSpinnerFrame = 0;
+            this->loadingSpinnerLastTick = 0;
+            this->refreshLoadingStagesText();
             return;
+        }
 
-        this->loadingProgressText->SetText("inst.shop.loading"_lang + " " + std::to_string(percent) + "%");
+        std::string label = this->loadingStageLabel;
+        if (label.empty())
+            label = "inst.shop.loading"_lang;
+        this->loadingProgressText->SetText(label + " " + std::to_string(percent) + "%");
         CenterTextX(this->loadingProgressText);
-        this->loadingBarFill->SetWidth((500 * percent) / 100);
+        this->loadingBarFill->SetWidth((760 * percent) / 100);
+        this->refreshLoadingStagesText();
     }
 
     const char* shopInstPage::getBrowseSortLabel() const
@@ -1998,6 +2100,7 @@ namespace inst::ui {
             icon->SetVisible(false);
 
         const int previousSectionIndex = this->selectedSectionIndex;
+        this->setLoadingProgressStage("Loading save sync list...");
         this->setLoadingProgress(92, true);
         mainApp->CallForRender();
         this->buildSaveSyncSection(this->activeShopUrl);
@@ -2026,6 +2129,7 @@ namespace inst::ui {
         }
 
         this->setLoadingProgress(0, false);
+        this->setLoadingProgressStage("");
     }
 
     void shopInstPage::buildSaveSyncSection(const std::string& shopUrl) {
@@ -3125,7 +3229,15 @@ namespace inst::ui {
         }
 
         if (!this->menu->GetItems().empty()) {
-            this->menu->SetSelectedIndex(restoredIndex);
+            const int maxIndex = static_cast<int>(this->menu->GetItems().size()) - 1;
+            if (restoredIndex > maxIndex)
+                restoredIndex = maxIndex;
+            if (restoredIndex < 0)
+                restoredIndex = 0;
+
+            // Avoid resetting the menu's internal top row when the same item remains selected.
+            if (restoredIndex != previousSelectionIndex || previousSelectionKey.empty())
+                this->menu->SetSelectedIndex(restoredIndex);
         }
         this->shopGridIndex = restoredIndex;
         this->gridSelectedIndex = restoredIndex;
@@ -3543,12 +3655,21 @@ namespace inst::ui {
         this->shopSections.clear();
         this->availableUpdates.clear();
         this->saveSyncEntries.clear();
-        this->installedSnapshot = {};
+        if (forceRefresh) {
+            this->installedSnapshot = {};
+        } else {
+            // Reuse installed-state caches across normal reloads to avoid rescanning NS metadata.
+            // The per-section installed list is tied to shopSections and must be rebuilt each time.
+            this->installedSnapshot.installedSectionBuilt = false;
+        }
         this->activeShopUrl.clear();
         this->searchQuery.clear();
         this->previewKey.clear();
-        this->pageInfoText->SetText("inst.shop.loading"_lang);
-        CenterTextX(this->pageInfoText);
+        this->pageInfoText->SetText("");
+        this->pageInfoText->SetVisible(false);
+        this->infoImage->SetX((1280 - this->infoImage->GetWidth()) / 2);
+        this->infoImage->SetY(86);
+        this->setLoadingProgressStage("Preparing shop...");
         this->setLoadingProgress(0, true);
         mainApp->LoadLayout(mainApp->shopinstPage);
         mainApp->CallForRender();
@@ -3573,32 +3694,140 @@ namespace inst::ui {
         std::string error;
         bool usedLegacyFallback = false;
         int loadingPercent = 5;
-        this->setLoadingProgress(loadingPercent, true);
-        mainApp->CallForRender();
-
-        int lastFetchPercent = -1;
-        auto fetchProgressCb = [&](std::uint64_t downloaded, std::uint64_t total) {
-            if (total == 0)
+        auto updateLoadingProgress = [&](int percent, const char* stage = nullptr, bool forceRender = false) {
+            if (stage != nullptr)
+                this->setLoadingProgressStage(stage);
+            if (percent > 100)
+                percent = 100;
+            if (percent < loadingPercent)
                 return;
-            int fetchPercent = static_cast<int>((downloaded * 100ULL) / total);
-            if (fetchPercent > 100)
-                fetchPercent = 100;
-            if (fetchPercent == lastFetchPercent)
+            if (!forceRender && percent == loadingPercent)
                 return;
-            lastFetchPercent = fetchPercent;
-
-            // Reserve the last 20% for parsing/section preparation after transfer.
-            loadingPercent = 5 + ((fetchPercent * 75) / 100);
+            loadingPercent = percent;
             this->setLoadingProgress(loadingPercent, true);
             mainApp->CallForRender();
         };
-        this->shopSections = shopInstStuff::FetchShopSections(shopUrl, inst::config::shopUser, inst::config::shopPass, error, &usedLegacyFallback, fetchProgressCb);
-        loadingPercent = std::max(loadingPercent, 82);
+        this->setLoadingProgressStage("Fetching shop list...");
         this->setLoadingProgress(loadingPercent, true);
         mainApp->CallForRender();
-        this->saveSyncEnabled = !usedLegacyFallback;
+
+        const std::string cacheKey = shopUrl + "\n" + inst::config::shopUser + "\n" + inst::config::shopPass + "\n" + (inst::config::shopLegacyMode ? "1" : "0");
+        const bool canUseCatalogCache = !forceRefresh
+            && this->catalogCacheValid
+            && this->catalogCacheKey == cacheKey
+            && !this->catalogCacheSections.empty();
+
+        if (canUseCatalogCache) {
+            updateLoadingProgress(89, "Using cached catalog...", true);
+            this->shopSections = this->catalogCacheSections;
+            usedLegacyFallback = this->catalogCacheUsedLegacyFallback;
+        } else {
+            std::atomic<bool> fetchDone{false};
+            std::atomic<std::uint64_t> fetchDownloaded{0};
+            std::atomic<std::uint64_t> fetchTotal{0};
+            std::vector<shopInstStuff::ShopSection> fetchedSections;
+            std::string fetchError;
+            bool fetchUsedLegacyFallback = false;
+
+            std::thread fetchThread([&]() {
+                auto fetchProgressCb = [&](std::uint64_t downloaded, std::uint64_t total) {
+                    fetchDownloaded.store(downloaded, std::memory_order_relaxed);
+                    fetchTotal.store(total, std::memory_order_relaxed);
+                };
+                fetchedSections = shopInstStuff::FetchShopSections(
+                    shopUrl,
+                    inst::config::shopUser,
+                    inst::config::shopPass,
+                    fetchError,
+                    &fetchUsedLegacyFallback,
+                    fetchProgressCb
+                );
+                fetchDone.store(true, std::memory_order_release);
+            });
+
+            const u64 spinnerStepTicks = (armGetSystemTickFreq() * 140) / 1000;
+            while (!fetchDone.load(std::memory_order_acquire)) {
+                const u64 now = armGetSystemTick();
+                const std::uint64_t downloaded = fetchDownloaded.load(std::memory_order_relaxed);
+                const std::uint64_t total = fetchTotal.load(std::memory_order_relaxed);
+
+                int mappedPercent = loadingPercent;
+                const char* stageLabel = "Fetching shop list...";
+                if (total > 0) {
+                    int fetchPercent = static_cast<int>((downloaded * 100ULL) / total);
+                    if (fetchPercent > 100)
+                        fetchPercent = 100;
+
+                    // Keep room for post-download parsing/preparation.
+                    mappedPercent = 5 + ((fetchPercent * 84) / 100); // 5..89
+                    if (fetchPercent >= 96)
+                        stageLabel = "Finishing catalog transfer...";
+                } else {
+                    // Some servers do not provide content-length; map received bytes to coarse milestones.
+                    if (downloaded >= (64ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 10);
+                    if (downloaded >= (256ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 16);
+                    if (downloaded >= (768ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 24);
+                    if (downloaded >= (2ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 34);
+                    if (downloaded >= (4ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 45);
+                    if (downloaded >= (8ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 57);
+                    if (downloaded >= (12ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 68);
+                    if (downloaded >= (16ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 78);
+                    if (downloaded >= (24ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 86);
+                    if (downloaded >= (32ULL * 1024ULL * 1024ULL))
+                        mappedPercent = std::max(mappedPercent, 89);
+                    if (downloaded >= (24ULL * 1024ULL * 1024ULL))
+                        stageLabel = "Finishing catalog transfer...";
+                }
+
+                const bool progressAdvanced = (mappedPercent > loadingPercent);
+                const bool stageChanged = (this->loadingStageLabel != stageLabel);
+                if (progressAdvanced || stageChanged) {
+                    updateLoadingProgress(mappedPercent, stageLabel, progressAdvanced);
+                } else {
+                    if (this->loadingSpinnerLastTick == 0)
+                        this->loadingSpinnerLastTick = now;
+                    if (now - this->loadingSpinnerLastTick >= spinnerStepTicks) {
+                        this->loadingSpinnerLastTick = now;
+                        this->loadingSpinnerFrame = (this->loadingSpinnerFrame + 1) % 4;
+                        this->refreshLoadingStagesText();
+                        mainApp->CallForRender();
+                    }
+                }
+
+                svcSleepThread(16'000'000ULL);
+            }
+
+            if (fetchThread.joinable())
+                fetchThread.join();
+
+            this->shopSections = std::move(fetchedSections);
+            error = fetchError;
+            usedLegacyFallback = fetchUsedLegacyFallback;
+            if (error.empty() && !this->shopSections.empty()) {
+                this->catalogCacheValid = true;
+                this->catalogCacheKey = cacheKey;
+                this->catalogCacheUsedLegacyFallback = usedLegacyFallback;
+                this->catalogCacheSections = this->shopSections;
+            }
+        }
+        updateLoadingProgress(90, "Parsing shop response...");
+        this->saveSyncEnabled = !usedLegacyFallback && !inst::config::shopLegacyMode;
         ShopDlcTrace("FetchShopSections done sections=%llu errorLen=%llu", static_cast<unsigned long long>(this->shopSections.size()), static_cast<unsigned long long>(error.size()));
-        ShopDlcTrace("save sync eligibility legacyFallback=%d enabled=%d", usedLegacyFallback ? 1 : 0, this->saveSyncEnabled ? 1 : 0);
+        ShopDlcTrace(
+            "save sync eligibility legacyFallback=%d tinfoilMode=%d enabled=%d",
+            usedLegacyFallback ? 1 : 0,
+            inst::config::shopLegacyMode ? 1 : 0,
+            this->saveSyncEnabled ? 1 : 0
+        );
         if (!error.empty()) {
             ShopDlcTrace("FetchShopSections error: %s", error.c_str());
             mainApp->CreateShowDialog("inst.shop.failed"_lang, error, {"common.ok"_lang}, true);
@@ -3611,18 +3840,23 @@ namespace inst::ui {
             mainApp->LoadLayout(mainApp->mainPage);
             return;
         }
-        loadingPercent = 88;
-        this->setLoadingProgress(loadingPercent, true);
-        mainApp->CallForRender();
+        updateLoadingProgress(91, "Scanning shop sections...");
 
-        for (const auto& section : this->shopSections) {
+        for (std::size_t i = 0; i < this->shopSections.size(); i++) {
+            const auto& section = this->shopSections[i];
             if (section.id == "updates" || section.id == "update")
                 this->nativeUpdatesSectionPresent = true;
             if (section.id == "dlc" || section.id == "addon" || section.id == "add-on" || section.id == "add_ons")
                 this->nativeDlcSectionPresent = true;
             ShopDlcTrace("section-before id='%s' title='%s' items=%llu", section.id.c_str(), section.title.c_str(), static_cast<unsigned long long>(section.items.size()));
+
+            if (!this->shopSections.empty()) {
+                const int scanProgress = 91 + static_cast<int>(((i + 1) * 3ULL) / this->shopSections.size()); // 91..94
+                updateLoadingProgress(scanProgress);
+            }
         }
         ShopDlcTrace("native sections updates=%d dlc=%d", this->nativeUpdatesSectionPresent ? 1 : 0, this->nativeDlcSectionPresent ? 1 : 0);
+        updateLoadingProgress(95, "Preparing sections...");
 
         if ((this->nativeUpdatesSectionPresent || this->nativeDlcSectionPresent) && !this->shopSections.empty()) {
             auto normalizeSectionId = [](std::string value) {
@@ -3683,21 +3917,32 @@ namespace inst::ui {
 
                 if (this->nativeUpdatesSectionPresent)
                     augmentSectionFromAll(updatesIndex, IsUpdateItem);
+                if (this->nativeUpdatesSectionPresent)
+                    updateLoadingProgress(96, "Preparing updates section...");
                 if (this->nativeDlcSectionPresent)
                     augmentSectionFromAll(dlcIndex, IsDlcItem);
+                if (this->nativeDlcSectionPresent)
+                    updateLoadingProgress(97, "Preparing DLC section...");
             } else {
                 ShopDlcTrace("augment skipped: no all section present");
+                updateLoadingProgress(97, "Preparing sections...");
             }
         }
 
+        updateLoadingProgress(98, "Preparing installed section...");
         this->ensureInstalledSectionPlaceholder();
         ShopDlcTrace("after ensureInstalledSectionPlaceholder sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
+        updateLoadingProgress(99, "Preparing owned sections...");
         this->buildLegacyOwnedSections();
         ShopDlcTrace("after buildLegacyOwnedSections sections=%llu", static_cast<unsigned long long>(this->shopSections.size()));
+        updateLoadingProgress(99, "Checking available updates...");
         this->cacheAvailableUpdates();
         ShopDlcTrace("after cacheAvailableUpdates availableUpdates=%llu", static_cast<unsigned long long>(this->availableUpdates.size()));
+        updateLoadingProgress(99, "Filtering sections...");
         this->filterOwnedSections();
+        updateLoadingProgress(99, "Sorting titles...");
         this->applyAllSectionSort();
+        updateLoadingProgress(99, "Preparing save sync...");
         if (this->saveSyncEnabled) {
             const bool hasSaveSection = std::any_of(this->shopSections.begin(), this->shopSections.end(), [](const auto& section) {
                 return section.id == "saves" || section.id == "save";
@@ -3709,6 +3954,8 @@ namespace inst::ui {
                 this->shopSections.push_back(std::move(saveSection));
             }
         }
+        updateLoadingProgress(99, "Finalizing shop...");
+        this->setLoadingProgressStage("Shop ready");
         this->setLoadingProgress(100, true);
         mainApp->CallForRender();
 
@@ -3725,7 +3972,9 @@ namespace inst::ui {
         this->gridSelectedIndex = 0;
         this->gridPage = -1;
         this->setLoadingProgress(0, false);
+        this->setLoadingProgressStage("");
         this->suppressBottomHints = false;
+        this->pageInfoText->SetVisible(true);
         this->updateSectionText();
         this->updateButtonsText();
         this->ensureSaveSyncSectionLoaded();
@@ -4750,4 +4999,5 @@ namespace inst::ui {
         this->bottomHintSegments = BuildBottomHintSegments(fullText, 10, hintFontSize);
     }
 }
+
 

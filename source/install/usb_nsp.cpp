@@ -178,6 +178,7 @@ namespace tin::install::nsp
 
         thrd_join(usbThread, NULL);
         thrd_join(writeThread, NULL);
+        bufferedPlaceholderWriter.close();
         if (stopThreadsUsbNsp) throw std::runtime_error(errorMessageUsbNsp.c_str());
     }
 

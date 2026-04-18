@@ -199,6 +199,11 @@ namespace tin::data
         return m_sizeWrittenToPlaceholder;
     }
 
+    void BufferedPlaceholderWriter::close()
+    {
+        m_writer.close();
+    }
+
     void BufferedPlaceholderWriter::DebugPrintBuffers()
     {
         LOG_DEBUG("BufferedPlaceholderWriter Buffers: \n");

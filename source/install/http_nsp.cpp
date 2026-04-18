@@ -277,6 +277,7 @@ namespace tin::install::nsp
 
         thrd_join(curlThread, NULL);
         thrd_join(writeThread, NULL);
+        bufferedPlaceholderWriter.close();
         if (inst::ui::instPage::isInstallCancelRequested())
             THROW_FORMAT("Installation canceled.");
         if (stopThreadsHttpNsp) THROW_FORMAT(("inst.net.transfer_interput"_lang).c_str());

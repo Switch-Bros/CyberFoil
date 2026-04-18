@@ -124,7 +124,7 @@ namespace tin::network
 
     static void BuildVersionAndRevision(std::string& outVersion, std::string& outRevision)
     {
-        const std::string raw = inst::config::appVersion;
+        const std::string raw = inst::config::shopLegacyMode ? "20.0.2" : inst::config::appVersion;
         outVersion = raw.empty() ? "0.0" : raw;
         outRevision = "0";
 
@@ -602,10 +602,18 @@ namespace tin::network
     {
         int ret = 0;
         size_t read = 0;
+        u64 lastRenderTick = armGetSystemTick();
+        const u64 renderInterval = armGetSystemTickFreq() / 4;
 
         while ((((ret = recv(sockfd, (u8*)buf + read, len - read, 0)) > 0 && (read += ret) < len) || errno == EAGAIN))
         {
             errno = 0;
+            inst::ui::mainApp->RefreshInputDevice();
+            const u64 now = armGetSystemTick();
+            if (now - lastRenderTick >= renderInterval) {
+                lastRenderTick = now;
+                inst::ui::mainApp->CallForRender();
+            }
         }
 
         return read;
@@ -618,6 +626,7 @@ namespace tin::network
 
         while (written < len)
         {
+            inst::ui::mainApp->RefreshInputDevice();
             inst::ui::mainApp->UpdateButtons();
             u64 kDown = inst::ui::mainApp->GetButtonsDown();
             if (kDown & HidNpadButton_B)
@@ -661,3 +670,4 @@ namespace tin::network
         curl_easy_cleanup(curl);
     }
 }
+

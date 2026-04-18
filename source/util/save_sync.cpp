@@ -518,7 +518,7 @@ namespace {
 
     void BuildVersionAndRevision(std::string& outVersion, std::string& outRevision)
     {
-        const std::string raw = inst::config::appVersion;
+        const std::string raw = inst::config::shopLegacyMode ? "20.0.2" : inst::config::appVersion;
         outVersion = raw.empty() ? "0.0" : raw;
         outRevision = "0";
 
@@ -1272,3 +1272,4 @@ namespace inst::save_sync {
         return true;
     }
 }
+

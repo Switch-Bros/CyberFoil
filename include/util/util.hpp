@@ -3,6 +3,7 @@
 #include <filesystem>
 
 namespace inst::util {
+    void SecureWipe(void* ptr, std::size_t len);
     void initApp ();
     void deinitApp ();
     void initInstallServices();

@@ -83,6 +83,20 @@ namespace inst::ui {
         return FormatOneDecimal(mib) + " MiB";
     }
 
+    void MainApplication::RefreshInputDevice(bool force) {
+        const AppletFocusState focus = appletGetFocusState();
+        const bool regainedFocus = (focus != this->lastFocusState) && (focus == AppletFocusState_InFocus);
+        this->lastFocusState = focus;
+
+        if (focus != AppletFocusState_InFocus)
+            return;
+
+        if (force || regainedFocus || !padIsConnected(&this->input_pad)) {
+            padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+            padInitializeDefault(&this->input_pad);
+        }
+    }
+
     void MainApplication::OnLoad() {
         mainApp = this;
 
@@ -107,25 +121,7 @@ namespace inst::ui {
         this->LoadLayout(this->mainPage);
 
         this->AddThread([this]() {
-            static AppletFocusState last_focus = AppletFocusState_InFocus;
-            static u64 last_check_tick = 0;
-            const u64 now = armGetSystemTick();
-            const u64 freq = armGetSystemTickFreq();
-            if (last_check_tick != 0 && (now - last_check_tick) < (freq / 2))
-                return;
-            last_check_tick = now;
-
-            AppletFocusState focus = appletGetFocusState();
-            if (focus != last_focus && focus == AppletFocusState_InFocus) {
-                padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-                padInitializeDefault(&this->input_pad);
-            }
-            last_focus = focus;
-
-            if (focus == AppletFocusState_InFocus && !padIsConnected(&this->input_pad)) {
-                padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-                padInitializeDefault(&this->input_pad);
-            }
+            this->RefreshInputDevice();
         });
 
         this->AddThread([this]() {

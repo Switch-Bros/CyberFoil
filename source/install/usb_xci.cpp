@@ -177,6 +177,7 @@ namespace tin::install::xci
 
         thrd_join(usbThread, NULL);
         thrd_join(writeThread, NULL);
+        bufferedPlaceholderWriter.close();
         if (stopThreadsUsbXci) throw std::runtime_error(errorMessageUsbXci.c_str());
     }
 

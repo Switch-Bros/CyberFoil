@@ -329,6 +329,12 @@ namespace inst::ui {
     }
 
     optionsPage::optionsPage() : Layout::Layout() {
+        if (inst::config::shopLegacyMode && inst::config::NormalizeHttpUserAgentMode(inst::config::httpUserAgentMode) != "tinfoil") {
+            inst::config::httpUserAgentMode = "tinfoil";
+            inst::config::httpUserAgent.clear();
+            inst::config::setConfig();
+        }
+
         if (inst::config::oledMode) {
             this->SetBackgroundColor(COLOR("#000000FF"));
         } else {
@@ -560,7 +566,12 @@ namespace inst::ui {
             addItem("Active shop: " + inst::util::shortenString(ActiveShopLabel(shops), 42, false), false, false);
             addItem("Memorized shops: " + std::to_string(shops.size()), false, false);
             addItem("Add new shop", false, false);
-            addItem("User-Agent profile: " + GetUserAgentProfileLabel(inst::config::httpUserAgentMode), false, false);
+            const std::string uaMode = inst::config::shopLegacyMode ? "tinfoil" : inst::config::httpUserAgentMode;
+            addItem("User-Agent profile: " + GetUserAgentProfileLabel(uaMode), false, false);
+            auto items = this->menu->GetItems();
+            if (inst::config::shopLegacyMode && items.size() > 3 && items[3] != nullptr)
+                items[3]->SetColor(COLOR("#FFFFFF88"));
+            addItem("Tinfoil Mode (legacy shop compatibility)", true, inst::config::shopLegacyMode);
             addItem("options.menu_items.shop_hide_installed"_lang, true, inst::config::shopHideInstalled);
             addItem("options.menu_items.shop_hide_installed_section"_lang, true, inst::config::shopHideInstalledSection);
             addItem("options.menu_items.shop_all_base_only"_lang, true, inst::config::shopAllBaseOnly);
@@ -766,7 +777,7 @@ namespace inst::ui {
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kGeneralMap) / sizeof(kGeneralMap[0])))) return;
                 selectedIndex = kGeneralMap[selectedIndex];
             } else if (this->selectedSection == 1) {
-                static const int kShopMap[] = {9, 20, 21, 25, 12, 13, 24, 19, 23, 22};
+                static const int kShopMap[] = {9, 20, 21, 25, 26, 12, 13, 24, 19, 23, 22};
                 if ((selectedIndex < 0) || (selectedIndex >= static_cast<int>(sizeof(kShopMap) / sizeof(kShopMap[0])))) return;
                 selectedIndex = kShopMap[selectedIndex];
             } else {
@@ -981,6 +992,11 @@ namespace inst::ui {
                     break;
                 }
                 case 25: {
+                    if (inst::config::shopLegacyMode) {
+                        inst::ui::mainApp->CreateShowDialog("User-Agent profile", "Locked to Tinfoil while Tinfoil Mode is enabled.", {"common.ok"_lang}, true);
+                        break;
+                    }
+
                     const std::vector<std::string> profiles = {
                         "Default (CyberFoil)",
                         "Tinfoil",
@@ -1031,6 +1047,18 @@ namespace inst::ui {
                 }
                 case 12:
                     inst::config::shopHideInstalled = !inst::config::shopHideInstalled;
+                    inst::config::setConfig();
+                    this->refreshOptions();
+                    break;
+                case 26:
+                    inst::config::shopLegacyMode = !inst::config::shopLegacyMode;
+                    if (inst::config::shopLegacyMode) {
+                        inst::config::httpUserAgentMode = "tinfoil";
+                        inst::config::httpUserAgent.clear();
+                    } else {
+                        inst::config::httpUserAgentMode = "default";
+                        inst::config::httpUserAgent.clear();
+                    }
                     inst::config::setConfig();
                     this->refreshOptions();
                     break;
@@ -1180,4 +1208,5 @@ namespace inst::ui {
         }
     }
 }
+
 

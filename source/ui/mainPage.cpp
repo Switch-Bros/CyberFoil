@@ -497,6 +497,16 @@ namespace inst::ui {
     }
 
     void MainPage::backupSaveDataMenuItem_Click() {
+        if (inst::config::shopLegacyMode) {
+            mainApp->CreateShowDialog(
+                "main.menu.backup"_lang,
+                "Save data backups are disabled while Tinfoil Mode is enabled.",
+                {"common.ok"_lang},
+                true
+            );
+            return;
+        }
+
         if (inst::util::getIPAddress() == "1.0.0.127") {
             inst::ui::mainApp->CreateShowDialog("main.net.title"_lang, "main.net.desc"_lang, {"common.ok"_lang}, true);
             return;
@@ -927,4 +937,5 @@ namespace inst::ui {
             this->activateSelectedMainItem();
     }
 }
+
 

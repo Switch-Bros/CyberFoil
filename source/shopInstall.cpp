@@ -5,12 +5,14 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <filesystem>
-#include <fstream>
 #include <limits>
-#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
+#include <zlib.h>
+#include <zstd.h>
+#include <mbedtls/aes.h>
 #include "shopInstall.hpp"
 #include "install/http_nsp.hpp"
 #include "install/http_xci.hpp"
@@ -33,6 +35,14 @@
 #include "util/network_util.hpp"
 #include "util/uid.hpp"
 #include "util/util.hpp"
+
+#ifndef HAVE_LIB_BLOB
+#define HAVE_LIB_BLOB 0
+#endif
+
+extern "C" {
+    bool z9f1(const void* wrappedKey, std::size_t wrappedLen, void* outAesKey16) __attribute__((weak));
+}
 
 namespace inst::ui {
     extern MainApplication *mainApp;
@@ -85,23 +95,112 @@ namespace {
         return url;
     }
 
+    int HexNibble(char c)
+    {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F')
+            return 10 + (c - 'A');
+        return -1;
+    }
+
     std::string DecodeUrlSegment(const std::string& value)
     {
-        CURL* curl = curl_easy_init();
-        if (!curl)
-            return value;
-        int outLength = 0;
-        char* decoded = curl_easy_unescape(curl, value.c_str(), value.size(), &outLength);
-        std::string result = decoded ? std::string(decoded, outLength) : value;
-        if (decoded)
-            curl_free(decoded);
-        curl_easy_cleanup(curl);
-        return result;
+        std::string out;
+        out.reserve(value.size());
+
+        for (std::size_t i = 0; i < value.size(); i++) {
+            const char c = value[i];
+            if (c == '%' && (i + 2) < value.size()) {
+                const int hi = HexNibble(value[i + 1]);
+                const int lo = HexNibble(value[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // Keep compatibility with common form-style encoding for display names.
+            if (c == '+') {
+                out.push_back(' ');
+                continue;
+            }
+
+            out.push_back(c);
+        }
+
+        return out;
+    }
+
+    bool IsLikelyLegacyPayloadAt(const std::string& body, std::size_t offset)
+    {
+        constexpr std::size_t kHeaderSize = 0x110;
+        constexpr std::uint8_t kCompressionNone = 0x00;
+        constexpr std::uint8_t kCompressionZstd = 0x0D;
+        constexpr std::uint8_t kCompressionZlib = 0x0E;
+
+        if (offset > body.size())
+            return false;
+        if ((body.size() - offset) < kHeaderSize)
+            return false;
+        if (body.compare(offset, 7, "TINFOIL") != 0)
+            return false;
+
+        const std::uint8_t info = static_cast<std::uint8_t>(body[offset + 7]);
+        const std::uint8_t compression = info & 0x0F;
+        if (compression != kCompressionNone &&
+            compression != kCompressionZstd &&
+            compression != kCompressionZlib) {
+            return false;
+        }
+
+        // Header looks structurally valid enough to treat as legacy payload.
+        return true;
+    }
+
+    bool FindLegacyPayloadOffset(const std::string& body, std::size_t& outOffset)
+    {
+        outOffset = std::string::npos;
+        if (body.empty())
+            return false;
+
+        if (IsLikelyLegacyPayloadAt(body, 0)) {
+            outOffset = 0;
+            return true;
+        }
+
+        // Some servers/proxies prepend BOM/whitespace/NUL bytes before legacy payload.
+        std::size_t start = 0;
+        if (body.size() >= 3 &&
+            static_cast<unsigned char>(body[0]) == 0xEF &&
+            static_cast<unsigned char>(body[1]) == 0xBB &&
+            static_cast<unsigned char>(body[2]) == 0xBF) {
+            start = 3;
+        }
+
+        while (start < body.size()) {
+            const char c = body[start];
+            if (c == '\0' || c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                start++;
+                continue;
+            }
+            break;
+        }
+
+        if (start < body.size() && IsLikelyLegacyPayloadAt(body, start)) {
+            outOffset = start;
+            return true;
+        }
+
+        return false;
     }
 
     void BuildVersionAndRevision(std::string& outVersion, std::string& outRevision)
     {
-        const std::string raw = inst::config::appVersion;
+        const std::string raw = inst::config::shopLegacyMode ? "20.0.2" : inst::config::appVersion;
         outVersion = raw.empty() ? "0.0" : raw;
         outRevision = "0";
 
@@ -131,8 +230,11 @@ namespace {
             outRevision = revisionToken.substr(0, digitsEnd);
     }
 
-    std::vector<std::string> BuildTinfoilHeaders(const std::string& requestUrl, const std::string& user, const std::string& pass)
+    std::vector<std::string> BuildLegacyHeaders(const std::string& requestUrl, const std::string& user, const std::string& pass)
     {
+        if (!inst::util::HasLegacyAuthSupport())
+            return {};
+
         std::string themeHeader = "Theme: 0000000000000000000000000000000000000000000000000000000000000000";
         std::string versionValue;
         std::string revisionValue;
@@ -152,6 +254,258 @@ namespace {
             hauthHeader,
             uauthHeader
         };
+    }
+
+    constexpr std::size_t kLegacyHeaderSize = 0x110;
+    constexpr std::size_t kLegacyWrappedKeySize = 0x100;
+    constexpr std::uint8_t kLegacyEncryptedFlag = 0xF0;
+    constexpr std::uint8_t kLegacyCompressionNone = 0x00;
+    constexpr std::uint8_t kLegacyCompressionZstd = 0x0D;
+    constexpr std::uint8_t kLegacyCompressionZlib = 0x0E;
+
+    std::uint64_t ReadLeU64(const std::string& body, std::size_t offset)
+    {
+        if (offset + 8 > body.size())
+            return 0;
+        std::uint64_t value = 0;
+        for (std::size_t i = 0; i < 8; i++)
+            value |= (static_cast<std::uint64_t>(static_cast<std::uint8_t>(body[offset + i])) << (i * 8));
+        return value;
+    }
+
+    bool InflatePayloadWithWindowBits(const std::vector<std::uint8_t>& input, int windowBits, std::vector<std::uint8_t>& output)
+    {
+        z_stream stream{};
+        stream.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(input.data()));
+        stream.avail_in = static_cast<uInt>(input.size());
+
+        if (inflateInit2(&stream, windowBits) != Z_OK)
+            return false;
+
+        std::vector<std::uint8_t> decoded;
+        decoded.reserve(input.size() * 2);
+        std::uint8_t chunk[8192];
+        int status = Z_OK;
+
+        while (status == Z_OK) {
+            stream.next_out = reinterpret_cast<Bytef*>(chunk);
+            stream.avail_out = static_cast<uInt>(sizeof(chunk));
+            status = inflate(&stream, Z_NO_FLUSH);
+            const std::size_t produced = sizeof(chunk) - stream.avail_out;
+            if (produced > 0)
+                decoded.insert(decoded.end(), chunk, chunk + produced);
+        }
+
+        inflateEnd(&stream);
+        if (status != Z_STREAM_END)
+            return false;
+
+        output = std::move(decoded);
+        return true;
+    }
+
+    bool TryPkcs7Unpad(const std::vector<std::uint8_t>& input, std::vector<std::uint8_t>& output)
+    {
+        output.clear();
+        if (input.empty())
+            return false;
+
+        const std::uint8_t pad = input.back();
+        if (pad == 0 || pad > 16 || pad > input.size())
+            return false;
+        for (std::size_t i = input.size() - pad; i < input.size(); i++) {
+            if (input[i] != pad)
+                return false;
+        }
+
+        output.assign(input.begin(), input.end() - pad);
+        return true;
+    }
+
+    std::vector<std::uint8_t> TrimTrailingZeros(const std::vector<std::uint8_t>& input)
+    {
+        std::vector<std::uint8_t> out = input;
+        while (!out.empty() && out.back() == 0)
+            out.pop_back();
+        return out;
+    }
+
+    bool DecompressZstdFlexible(const std::vector<std::uint8_t>& input, std::uint64_t expectedSize, std::vector<std::uint8_t>& output)
+    {
+        output.clear();
+        std::size_t srcOffset = 0;
+        const std::size_t total = input.size();
+
+        while (srcOffset < total) {
+            while (srcOffset < total && input[srcOffset] == 0)
+                srcOffset++;
+            if (srcOffset >= total)
+                break;
+
+            const std::size_t frameSize = ZSTD_findFrameCompressedSize(input.data() + srcOffset, total - srcOffset);
+            if (ZSTD_isError(frameSize) || frameSize == 0 || (srcOffset + frameSize) > total)
+                return false;
+
+            const unsigned long long frameContentSize = ZSTD_getFrameContentSize(input.data() + srcOffset, frameSize);
+            if (frameContentSize == ZSTD_CONTENTSIZE_ERROR || frameContentSize == ZSTD_CONTENTSIZE_UNKNOWN)
+                return false;
+            if (frameContentSize > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max()))
+                return false;
+
+            const std::size_t writeOffset = output.size();
+            output.resize(writeOffset + static_cast<std::size_t>(frameContentSize));
+            const std::size_t rc = ZSTD_decompress(
+                output.data() + writeOffset,
+                static_cast<std::size_t>(frameContentSize),
+                input.data() + srcOffset,
+                frameSize);
+            if (ZSTD_isError(rc) || rc != frameContentSize)
+                return false;
+
+            srcOffset += frameSize;
+        }
+
+        if (expectedSize > 0 && output.empty())
+            return false;
+        return true;
+    }
+
+    bool TryUnwrapLegacyAesKey(const std::uint8_t* wrappedKey, std::vector<std::uint8_t>& outAesKey)
+    {
+        outAesKey.clear();
+        if (wrappedKey == nullptr)
+            return false;
+        if (z9f1 == nullptr)
+            return false;
+
+        std::array<std::uint8_t, 16> unwrapped{};
+        const bool ok = z9f1(wrappedKey, kLegacyWrappedKeySize, unwrapped.data());
+        if (!ok) {
+            inst::util::SecureWipe(unwrapped.data(), unwrapped.size());
+            return false;
+        }
+
+        outAesKey.assign(unwrapped.begin(), unwrapped.end());
+        inst::util::SecureWipe(unwrapped.data(), unwrapped.size());
+        return true;
+    }
+
+    bool DecodeLegacyPayload(const std::string& body, std::string& outDecoded, std::string& outError)
+    {
+        if (body.rfind("TINFOIL", 0) != 0) {
+            outDecoded = body;
+            return true;
+        }
+
+        if (body.size() < kLegacyHeaderSize) {
+            outError = "Encrypted shop response is truncated.";
+            return false;
+        }
+
+        const std::uint8_t info = static_cast<std::uint8_t>(body[7]);
+        const bool encrypted = (info & kLegacyEncryptedFlag) == kLegacyEncryptedFlag;
+        const std::uint8_t compression = info & 0x0F;
+        const std::uint64_t plainSize = ReadLeU64(body, 0x108);
+
+        std::vector<std::uint8_t> payload(body.begin() + kLegacyHeaderSize, body.end());
+
+        if (encrypted) {
+#if !HAVE_LIB_BLOB
+            outError = "This build was made without prebuilt/lib.a; encrypted shop responses are not supported.";
+            return false;
+#else
+            std::vector<std::uint8_t> aesKey;
+            if (!TryUnwrapLegacyAesKey(reinterpret_cast<const std::uint8_t*>(body.data() + 0x8), aesKey)) {
+                outError = "Encrypted shop response could not be decrypted.";
+                return false;
+            }
+
+            mbedtls_aes_context aesCtx;
+            mbedtls_aes_init(&aesCtx);
+            if (mbedtls_aes_setkey_dec(&aesCtx, aesKey.data(), 128) != 0) {
+                mbedtls_aes_free(&aesCtx);
+                if (!aesKey.empty())
+                    inst::util::SecureWipe(aesKey.data(), aesKey.size());
+                outError = "Failed to initialize AES decryption for encrypted shop response.";
+                return false;
+            }
+            if ((payload.size() % 16) != 0) {
+                mbedtls_aes_free(&aesCtx);
+                if (!aesKey.empty())
+                    inst::util::SecureWipe(aesKey.data(), aesKey.size());
+                outError = "Encrypted shop payload is not AES block aligned.";
+                return false;
+            }
+            for (std::size_t off = 0; off < payload.size(); off += 16)
+                mbedtls_aes_crypt_ecb(&aesCtx, MBEDTLS_AES_DECRYPT, payload.data() + off, payload.data() + off);
+            mbedtls_aes_free(&aesCtx);
+            if (!aesKey.empty())
+                inst::util::SecureWipe(aesKey.data(), aesKey.size());
+            aesKey.clear();
+#endif
+        }
+
+        std::vector<std::vector<std::uint8_t>> candidates;
+        candidates.push_back(payload);
+        std::vector<std::uint8_t> unpadded;
+        if (TryPkcs7Unpad(payload, unpadded) && !unpadded.empty() && unpadded != payload)
+            candidates.push_back(unpadded);
+
+        std::vector<std::uint8_t> decoded;
+        if (compression == kLegacyCompressionNone) {
+            const std::vector<std::uint8_t>& candidate = candidates.front();
+            if (plainSize > 0) {
+                if (candidate.size() < plainSize) {
+                    outError = "Payload shorter than expected plain size.";
+                    return false;
+                }
+                decoded.assign(candidate.begin(), candidate.begin() + static_cast<std::size_t>(plainSize));
+            } else {
+                decoded = candidate;
+            }
+        } else if (compression == kLegacyCompressionZlib) {
+            bool ok = false;
+            for (const auto& cand : candidates) {
+                if (InflatePayloadWithWindowBits(cand, MAX_WBITS, decoded) ||
+                    InflatePayloadWithWindowBits(cand, MAX_WBITS | 16, decoded) ||
+                    InflatePayloadWithWindowBits(cand, -MAX_WBITS, decoded)) {
+                    ok = true;
+                    break;
+                }
+                const auto trimmed = TrimTrailingZeros(cand);
+                if (!trimmed.empty() && trimmed != cand &&
+                    (InflatePayloadWithWindowBits(trimmed, MAX_WBITS, decoded) ||
+                     InflatePayloadWithWindowBits(trimmed, MAX_WBITS | 16, decoded) ||
+                     InflatePayloadWithWindowBits(trimmed, -MAX_WBITS, decoded))) {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) {
+                outError = "Failed to decompress zlib-compressed shop payload.";
+                return false;
+            }
+        } else if (compression == kLegacyCompressionZstd) {
+            bool ok = false;
+            for (const auto& cand : candidates) {
+                if (DecompressZstdFlexible(cand, plainSize, decoded)) {
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) {
+                outError = "Failed to decompress zstd-compressed shop payload.";
+                return false;
+            }
+        } else {
+            outError = "Unsupported compressed shop payload format.";
+            return false;
+        }
+
+        outDecoded.assign(decoded.begin(), decoded.end());
+        while (!outDecoded.empty() && outDecoded.back() == '\0')
+            outDecoded.pop_back();
+        return true;
     }
 
     bool IsXciExtension(const std::string& name)
@@ -968,73 +1322,151 @@ namespace shopInstStuff {
         std::string effectiveUrl;
         std::string contentType;
         std::string error;
+        std::string decodeError;
+        CURLcode curlCode = CURLE_OK;
     };
+
+    namespace {
+        constexpr long kShopRequestTimeoutMs = 30000L;
+        constexpr long kShopConnectTimeoutMs = 10000L;
+        constexpr int kShopFetchMaxAttempts = 4;
+
+        bool IsRetriableHttpCode(long responseCode)
+        {
+            return responseCode == 408 ||
+                responseCode == 425 ||
+                responseCode == 429 ||
+                responseCode == 500 ||
+                responseCode == 502 ||
+                responseCode == 503 ||
+                responseCode == 504;
+        }
+
+        bool IsRetriableCurlCode(CURLcode code)
+        {
+            switch (code) {
+                case CURLE_COULDNT_RESOLVE_HOST:
+                case CURLE_COULDNT_RESOLVE_PROXY:
+                case CURLE_COULDNT_CONNECT:
+                case CURLE_OPERATION_TIMEDOUT:
+                case CURLE_SEND_ERROR:
+                case CURLE_RECV_ERROR:
+                case CURLE_GOT_NOTHING:
+                case CURLE_SSL_CONNECT_ERROR:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        bool ShouldRetryShopFetch(const FetchResult& result)
+        {
+            if (result.curlCode != CURLE_OK)
+                return IsRetriableCurlCode(result.curlCode);
+            return IsRetriableHttpCode(result.responseCode);
+        }
+
+        std::uint32_t ShopRetryDelayMs(int attemptIndex)
+        {
+            // attemptIndex is 0-based for retries after the first try.
+            static constexpr std::uint32_t kBackoffMs[kShopFetchMaxAttempts - 1] = {450, 1000, 1800};
+            if (attemptIndex < 0)
+                return kBackoffMs[0];
+            if (attemptIndex >= static_cast<int>(sizeof(kBackoffMs) / sizeof(kBackoffMs[0])))
+                return kBackoffMs[(sizeof(kBackoffMs) / sizeof(kBackoffMs[0])) - 1];
+            return kBackoffMs[attemptIndex];
+        }
+    }
 
     FetchResult FetchShopResponse(const std::string& url, const std::string& user, const std::string& pass, const ShopFetchProgressCallback& progressCb = ShopFetchProgressCallback())
     {
-        FetchResult result;
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            result.error = "Failed to initialize curl.";
-            return result;
+        FetchResult lastResult;
+
+        for (int attempt = 0; attempt < kShopFetchMaxAttempts; attempt++) {
+            FetchResult result;
+            CURL* curl = curl_easy_init();
+            if (!curl) {
+                result.error = "Failed to initialize curl.";
+                return result;
+            }
+
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            const std::string userAgent = inst::config::shopLegacyMode ? std::string() : inst::curl::getDefaultUserAgent();
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, kShopRequestTimeoutMs);
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, kShopConnectTimeoutMs);
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+
+            ShopFetchProgressContext progressCtx{};
+            if (progressCb) {
+                progressCtx.cb = &progressCb;
+                curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+                curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, ShopFetchProgressHandler);
+                curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressCtx);
+            }
+
+            struct curl_slist* headerList = nullptr;
+            const auto headers = BuildLegacyHeaders(url, user, pass);
+            for (const auto& header : headers)
+                headerList = curl_slist_append(headerList, header.c_str());
+            if (headerList)
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
+
+            std::string authValue;
+            if (!user.empty() || !pass.empty()) {
+                authValue = user + ":" + pass;
+                curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+                curl_easy_setopt(curl, CURLOPT_USERPWD, authValue.c_str());
+            }
+
+            const CURLcode rc = curl_easy_perform(curl);
+            result.curlCode = rc;
+
+            long responseCode = 0;
+            char* effectiveUrl = nullptr;
+            char* contentType = nullptr;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
+            curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effectiveUrl);
+            curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &contentType);
+            if (headerList)
+                curl_slist_free_all(headerList);
+            curl_easy_cleanup(curl);
+
+            result.responseCode = responseCode;
+            result.effectiveUrl = effectiveUrl ? effectiveUrl : "";
+            result.contentType = contentType ? contentType : "";
+
+            if (rc != CURLE_OK) {
+                result.error = std::string(curl_easy_strerror(rc)) + " (curl=" + std::to_string(static_cast<int>(rc)) + ")";
+            } else if (progressCb) {
+                const std::uint64_t bodySize = static_cast<std::uint64_t>(result.body.size());
+                progressCb(bodySize, bodySize);
+            }
+
+            std::size_t legacyOffset = std::string::npos;
+            if (result.error.empty() && FindLegacyPayloadOffset(result.body, legacyOffset)) {
+                std::string decodedBody;
+                std::string decodeError;
+                const std::string legacyBody = (legacyOffset == 0) ? result.body : result.body.substr(legacyOffset);
+                if (DecodeLegacyPayload(legacyBody, decodedBody, decodeError))
+                    result.body = std::move(decodedBody);
+                else
+                    result.decodeError = std::move(decodeError);
+            }
+
+            const bool canRetry = (attempt + 1) < kShopFetchMaxAttempts && ShouldRetryShopFetch(result);
+            if (!canRetry)
+                return result;
+
+            lastResult = result;
+            std::this_thread::sleep_for(std::chrono::milliseconds(ShopRetryDelayMs(attempt)));
         }
 
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        const std::string& userAgent = inst::curl::getUserAgent();
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
-
-        ShopFetchProgressContext progressCtx{};
-        if (progressCb) {
-            progressCtx.cb = &progressCb;
-            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, ShopFetchProgressHandler);
-            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressCtx);
-        }
-
-        struct curl_slist* headerList = nullptr;
-        const auto headers = BuildTinfoilHeaders(url, user, pass);
-        for (const auto& header : headers)
-            headerList = curl_slist_append(headerList, header.c_str());
-        if (headerList)
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
-
-        std::string authValue;
-        if (!user.empty() || !pass.empty()) {
-            authValue = user + ":" + pass;
-            curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-            curl_easy_setopt(curl, CURLOPT_USERPWD, authValue.c_str());
-        }
-
-        CURLcode rc = curl_easy_perform(curl);
-        long responseCode = 0;
-        char* effectiveUrl = nullptr;
-        char* contentType = nullptr;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
-        curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effectiveUrl);
-        curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &contentType);
-        if (headerList)
-            curl_slist_free_all(headerList);
-        curl_easy_cleanup(curl);
-
-        result.responseCode = responseCode;
-        result.effectiveUrl = effectiveUrl ? effectiveUrl : "";
-        result.contentType = contentType ? contentType : "";
-
-        if (rc != CURLE_OK) {
-            result.error = curl_easy_strerror(rc);
-        } else if (progressCb) {
-            const std::uint64_t bodySize = static_cast<std::uint64_t>(result.body.size());
-            progressCb(bodySize, bodySize);
-        }
-
-        return result;
+        return lastResult;
     }
 
     bool ValidateShopResponse(const FetchResult& fetch, std::string& error)
@@ -1044,18 +1476,301 @@ namespace shopInstStuff {
             return false;
         }
         if (fetch.responseCode == 401 || fetch.responseCode == 403) {
-            error = "Shop requires authentication. Check credentials or enable public shop in eShop.";
+            if (!inst::util::HasLegacyAuthSupport()) {
+                error = "Shop requires legacy HAUTH/UAUTH signing, but this build does not support it.";
+            } else {
+                error = "Shop requires authentication. Check credentials or enable public shop in eShop.";
+            }
+            return false;
+        }
+        if (!fetch.decodeError.empty()) {
+            error = fetch.decodeError;
+            return false;
+        }
+        std::size_t legacyOffset = std::string::npos;
+        if (FindLegacyPayloadOffset(fetch.body, legacyOffset)) {
+            error = "Encrypted shop response could not be decoded.";
             return false;
         }
         if (IsLoginUrl(fetch.effectiveUrl.c_str()) || (!fetch.contentType.empty() && fetch.contentType.find("text/html") != std::string::npos) || ContainsHtml(fetch.body)) {
-            error = "eShop returned the login page. Check shop URL, username, and password, or enable public shop.";
-            return false;
-        }
-        if (fetch.body.rfind("TINFOIL", 0) == 0) {
-            error = "inst.shop.encrypted_unsupported"_lang;
+            if (inst::config::shopLegacyMode && !inst::util::HasLegacyAuthSupport()) {
+                error = "This build does not support this shop";
+            } else {
+                error = "eShop returned the login page. Check shop URL, username, and password, or enable public shop.";
+            }
             return false;
         }
         return true;
+    }
+
+    namespace {
+        bool AppendShopItemFromEntry(const nlohmann::json& entry, const std::string& baseUrl,
+            std::vector<ShopItem>& items, std::unordered_set<std::string>& seenItemUrls)
+        {
+            std::string rawUrl;
+            if (entry.is_string()) {
+                rawUrl = entry.get<std::string>();
+            } else if (entry.is_object()) {
+                if (entry.contains("url") && entry["url"].is_string())
+                    rawUrl = entry["url"].get<std::string>();
+                else if (entry.contains("path") && entry["path"].is_string())
+                    rawUrl = entry["path"].get<std::string>();
+                else if (entry.contains("file") && entry["file"].is_string())
+                    rawUrl = entry["file"].get<std::string>();
+                else if (entry.contains("download_url") && entry["download_url"].is_string())
+                    rawUrl = entry["download_url"].get<std::string>();
+                else if (entry.contains("downloadUrl") && entry["downloadUrl"].is_string())
+                    rawUrl = entry["downloadUrl"].get<std::string>();
+            } else {
+                return false;
+            }
+
+            if (rawUrl.empty())
+                return false;
+
+            std::uint64_t size = 0;
+            if (entry.is_object() && entry.contains("size")) {
+                if (entry["size"].is_number_unsigned())
+                    size = entry["size"].get<std::uint64_t>();
+                else if (entry["size"].is_number_integer()) {
+                    const auto parsedSize = entry["size"].get<long long>();
+                    if (parsedSize > 0)
+                        size = static_cast<std::uint64_t>(parsedSize);
+                }
+            }
+
+            std::string fragment;
+            std::string urlPath = rawUrl;
+            const auto hashPos = urlPath.find('#');
+            if (hashPos != std::string::npos) {
+                fragment = urlPath.substr(hashPos + 1);
+                urlPath = urlPath.substr(0, hashPos);
+            }
+
+            const std::string fullUrl = BuildFullUrl(baseUrl, urlPath);
+            if (fullUrl.empty())
+                return false;
+            if (!seenItemUrls.insert(fullUrl).second)
+                return false;
+
+            std::string name;
+            if (entry.is_object() && entry.contains("name") && entry["name"].is_string() &&
+                !TrimAscii(entry["name"].get<std::string>()).empty()) {
+                name = TrimAscii(entry["name"].get<std::string>());
+            } else if (!fragment.empty()) {
+                name = DecodeUrlSegment(fragment);
+            } else {
+                name = inst::util::formatUrlString(fullUrl);
+            }
+            if (name.empty())
+                return false;
+
+            ShopItem item;
+            item.name = name;
+            item.url = fullUrl;
+            item.size = size;
+            ApplyLegacyMetadataFromName(name, item);
+
+            std::uint32_t releaseDate = 0;
+            if (entry.is_object() && TryParseReleaseDate(entry, releaseDate)) {
+                item.releaseDate = releaseDate;
+                item.hasReleaseDate = true;
+            }
+
+            if (entry.is_object()) {
+                if (entry.contains("icon_url") && entry["icon_url"].is_string()) {
+                    std::string iconUrl = entry["icon_url"].get<std::string>();
+                    if (!iconUrl.empty()) {
+                        item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
+                        item.hasIconUrl = true;
+                    }
+                } else if (entry.contains("iconUrl") && entry["iconUrl"].is_string()) {
+                    std::string iconUrl = entry["iconUrl"].get<std::string>();
+                    if (!iconUrl.empty()) {
+                        item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
+                        item.hasIconUrl = true;
+                    }
+                }
+                if (entry.contains("save_id") && entry["save_id"].is_string())
+                    item.saveId = entry["save_id"].get<std::string>();
+                else if (entry.contains("saveId") && entry["saveId"].is_string())
+                    item.saveId = entry["saveId"].get<std::string>();
+                if (entry.contains("note") && entry["note"].is_string())
+                    item.saveNote = entry["note"].get<std::string>();
+                else if (entry.contains("save_note") && entry["save_note"].is_string())
+                    item.saveNote = entry["save_note"].get<std::string>();
+                else if (entry.contains("saveNote") && entry["saveNote"].is_string())
+                    item.saveNote = entry["saveNote"].get<std::string>();
+                if (entry.contains("created_at") && entry["created_at"].is_string())
+                    item.saveCreatedAt = entry["created_at"].get<std::string>();
+                else if (entry.contains("createdAt") && entry["createdAt"].is_string())
+                    item.saveCreatedAt = entry["createdAt"].get<std::string>();
+                if (entry.contains("created_ts")) {
+                    if (entry["created_ts"].is_number_unsigned())
+                        item.saveCreatedTs = entry["created_ts"].get<std::uint64_t>();
+                    else if (entry["created_ts"].is_number_integer()) {
+                        const auto parsedCreatedTs = entry["created_ts"].get<long long>();
+                        if (parsedCreatedTs > 0)
+                            item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
+                    }
+                } else if (entry.contains("createdTs")) {
+                    if (entry["createdTs"].is_number_unsigned())
+                        item.saveCreatedTs = entry["createdTs"].get<std::uint64_t>();
+                    else if (entry["createdTs"].is_number_integer()) {
+                        const auto parsedCreatedTs = entry["createdTs"].get<long long>();
+                        if (parsedCreatedTs > 0)
+                            item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
+                    }
+                }
+            }
+
+            if (!item.hasIconUrl && !inst::config::shopLegacyMode) {
+                std::uint64_t baseTitleId = 0;
+                if (TryResolveBaseTitleId(item, baseTitleId) && baseTitleId != 0) {
+                    item.iconUrl = BuildFullUrl(baseUrl, "/api/shop/icon/" + FormatTitleIdHexUpper(baseTitleId));
+                    item.hasIconUrl = true;
+                }
+            }
+
+            items.push_back(std::move(item));
+            return true;
+        }
+
+        bool AppendLegacyFilesFromJson(const nlohmann::json& files, const std::string& baseUrl,
+            std::vector<ShopItem>& items, std::unordered_set<std::string>& seenItemUrls)
+        {
+            if (files.is_array()) {
+                bool any = false;
+                for (const auto& entry : files)
+                    any = AppendShopItemFromEntry(entry, baseUrl, items, seenItemUrls) || any;
+                return any;
+            }
+
+            if (!files.is_object())
+                return false;
+
+            bool any = false;
+            for (auto it = files.begin(); it != files.end(); ++it) {
+                const std::string key = it.key();
+                const auto& value = it.value();
+                if (value.is_object()) {
+                    nlohmann::json normalized = value;
+                    if ((!normalized.contains("name") || !normalized["name"].is_string()) && !key.empty())
+                        normalized["name"] = key;
+                    any = AppendShopItemFromEntry(normalized, baseUrl, items, seenItemUrls) || any;
+                } else if (value.is_string()) {
+                    nlohmann::json normalized = {
+                        {"name", key},
+                        {"url", value.get<std::string>()}
+                    };
+                    any = AppendShopItemFromEntry(normalized, baseUrl, items, seenItemUrls) || any;
+                } else if (value.is_array()) {
+                    for (const auto& sub : value) {
+                        if (!sub.is_string())
+                            continue;
+                        nlohmann::json normalized = {
+                            {"name", key},
+                            {"url", sub.get<std::string>()}
+                        };
+                        any = AppendShopItemFromEntry(normalized, baseUrl, items, seenItemUrls) || any;
+                    }
+                }
+            }
+            return any;
+        }
+
+        std::string GetDirectoryEntryUrl(const nlohmann::json& entry)
+        {
+            if (entry.is_string())
+                return entry.get<std::string>();
+            if (!entry.is_object())
+                return "";
+
+            static const char* candidates[] = {"url", "path", "directory", "href", "location"};
+            for (const char* key : candidates) {
+                if (entry.contains(key) && entry[key].is_string())
+                    return entry[key].get<std::string>();
+            }
+            return "";
+        }
+
+        bool CollectShopItemsFromJson(const nlohmann::json& shop, const std::string& baseUrl,
+            const std::string& user, const std::string& pass, std::vector<ShopItem>& items,
+            std::unordered_set<std::string>& seenItemUrls, std::unordered_set<std::string>& seenManifestUrls,
+            std::string& error, const ShopFetchProgressCallback& progressCb)
+        {
+            if (!shop.is_object()) {
+                error = "Invalid shop response.";
+                return false;
+            }
+            if (shop.contains("error") && shop["error"].is_string()) {
+                error = shop["error"].get<std::string>();
+                return false;
+            }
+
+            bool handled = false;
+
+            if (shop.contains("sections") && shop["sections"].is_array()) {
+                std::string parseError;
+                std::vector<ShopSection> parsedSections = ParseShopSectionsBody(shop.dump(), baseUrl, parseError);
+                if (!parsedSections.empty()) {
+                    for (const auto& section : parsedSections) {
+                        for (const auto& sectionItem : section.items) {
+                            if (!seenItemUrls.insert(sectionItem.url).second)
+                                continue;
+                            items.push_back(sectionItem);
+                        }
+                    }
+                    handled = true;
+                }
+            }
+
+            if (shop.contains("files")) {
+                if (AppendLegacyFilesFromJson(shop["files"], baseUrl, items, seenItemUrls))
+                    handled = true;
+            }
+            if (shop.contains("paths")) {
+                if (AppendLegacyFilesFromJson(shop["paths"], baseUrl, items, seenItemUrls))
+                    handled = true;
+            }
+
+            if (shop.contains("directories") && shop["directories"].is_array()) {
+                handled = true;
+                for (const auto& directoryEntry : shop["directories"]) {
+                    const std::string directoryPath = GetDirectoryEntryUrl(directoryEntry);
+                    if (directoryPath.empty())
+                        continue;
+
+                    const std::string directoryUrl = BuildFullUrl(baseUrl, directoryPath);
+                    if (directoryUrl.empty())
+                        continue;
+                    if (!seenManifestUrls.insert(directoryUrl).second)
+                        continue;
+
+                    FetchResult directoryFetch = FetchShopResponse(directoryUrl, user, pass, progressCb);
+                    if (!ValidateShopResponse(directoryFetch, error))
+                        return false;
+
+                    nlohmann::json directoryJson;
+                    try {
+                        directoryJson = nlohmann::json::parse(directoryFetch.body);
+                    } catch (...) {
+                        error = "Invalid shop response.";
+                        return false;
+                    }
+
+                    if (!CollectShopItemsFromJson(directoryJson, baseUrl, user, pass, items, seenItemUrls, seenManifestUrls, error, progressCb))
+                        return false;
+                }
+            }
+
+            if (!handled) {
+                error = "Shop response missing file list.";
+                return false;
+            }
+
+            return true;
+        }
     }
 
     std::vector<ShopItem> FetchShop(const std::string& shopUrl, const std::string& user, const std::string& pass, std::string& error, const ShopFetchProgressCallback& progressCb)
@@ -1075,115 +1790,11 @@ namespace shopInstStuff {
 
         try {
             nlohmann::json shop = nlohmann::json::parse(fetch.body);
-            if (shop.contains("error")) {
-                error = shop["error"].get<std::string>();
+            std::unordered_set<std::string> seenItemUrls;
+            std::unordered_set<std::string> seenManifestUrls;
+            seenManifestUrls.insert(baseUrl);
+            if (!CollectShopItemsFromJson(shop, baseUrl, user, pass, items, seenItemUrls, seenManifestUrls, error, progressCb))
                 return items;
-            }
-            if (!shop.contains("files") || !shop["files"].is_array()) {
-                error = "Shop response missing file list.";
-                return items;
-            }
-
-            for (const auto& entry : shop["files"]) {
-                if (!entry.contains("url"))
-                    continue;
-                std::string url = entry["url"].get<std::string>();
-                std::uint64_t size = 0;
-                if (entry.contains("size") && entry["size"].is_number()) {
-                    size = entry["size"].get<std::uint64_t>();
-                }
-
-                std::string fragment;
-                std::string urlPath = url;
-                auto hashPos = urlPath.find('#');
-                if (hashPos != std::string::npos) {
-                    fragment = urlPath.substr(hashPos + 1);
-                    urlPath = urlPath.substr(0, hashPos);
-                }
-
-                std::string fullUrl;
-                if (urlPath.rfind("http://", 0) == 0 || urlPath.rfind("https://", 0) == 0)
-                    fullUrl = urlPath;
-                else if (!urlPath.empty() && urlPath[0] == '/')
-                    fullUrl = baseUrl + urlPath;
-                else
-                    fullUrl = baseUrl + "/" + urlPath;
-
-                std::string name;
-                if (!fragment.empty())
-                    name = DecodeUrlSegment(fragment);
-                else {
-                    name = inst::util::formatUrlString(fullUrl);
-                }
-
-                if (!fullUrl.empty() && !name.empty()) {
-                    ShopItem item;
-                    item.name = name;
-                    item.url = fullUrl;
-                    item.size = size;
-                    ApplyLegacyMetadataFromName(name, item);
-                    std::uint32_t releaseDate = 0;
-                    if (TryParseReleaseDate(entry, releaseDate)) {
-                        item.releaseDate = releaseDate;
-                        item.hasReleaseDate = true;
-                    }
-
-                    if (entry.contains("icon_url") && entry["icon_url"].is_string()) {
-                        std::string iconUrl = entry["icon_url"].get<std::string>();
-                        if (!iconUrl.empty()) {
-                            item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
-                            item.hasIconUrl = true;
-                        }
-                    } else if (entry.contains("iconUrl") && entry["iconUrl"].is_string()) {
-                        std::string iconUrl = entry["iconUrl"].get<std::string>();
-                        if (!iconUrl.empty()) {
-                            item.iconUrl = BuildFullUrl(baseUrl, iconUrl);
-                            item.hasIconUrl = true;
-                        }
-                    }
-                    if (entry.contains("save_id") && entry["save_id"].is_string())
-                        item.saveId = entry["save_id"].get<std::string>();
-                    else if (entry.contains("saveId") && entry["saveId"].is_string())
-                        item.saveId = entry["saveId"].get<std::string>();
-                    if (entry.contains("note") && entry["note"].is_string())
-                        item.saveNote = entry["note"].get<std::string>();
-                    else if (entry.contains("save_note") && entry["save_note"].is_string())
-                        item.saveNote = entry["save_note"].get<std::string>();
-                    else if (entry.contains("saveNote") && entry["saveNote"].is_string())
-                        item.saveNote = entry["saveNote"].get<std::string>();
-                    if (entry.contains("created_at") && entry["created_at"].is_string())
-                        item.saveCreatedAt = entry["created_at"].get<std::string>();
-                    else if (entry.contains("createdAt") && entry["createdAt"].is_string())
-                        item.saveCreatedAt = entry["createdAt"].get<std::string>();
-                    if (entry.contains("created_ts")) {
-                        if (entry["created_ts"].is_number_unsigned())
-                            item.saveCreatedTs = entry["created_ts"].get<std::uint64_t>();
-                        else if (entry["created_ts"].is_number_integer()) {
-                            const auto parsedCreatedTs = entry["created_ts"].get<long long>();
-                            if (parsedCreatedTs > 0)
-                                item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
-                        }
-                    } else if (entry.contains("createdTs")) {
-                        if (entry["createdTs"].is_number_unsigned())
-                            item.saveCreatedTs = entry["createdTs"].get<std::uint64_t>();
-                        else if (entry["createdTs"].is_number_integer()) {
-                            const auto parsedCreatedTs = entry["createdTs"].get<long long>();
-                            if (parsedCreatedTs > 0)
-                                item.saveCreatedTs = static_cast<std::uint64_t>(parsedCreatedTs);
-                        }
-                    }
-
-                    if (!item.hasIconUrl) {
-                        std::uint64_t baseTitleId = 0;
-                        if (TryResolveBaseTitleId(item, baseTitleId) && baseTitleId != 0) {
-                            item.iconUrl = BuildFullUrl(baseUrl, "/api/shop/icon/" + FormatTitleIdHexUpper(baseTitleId));
-                            item.hasIconUrl = true;
-                        }
-                    }
-
-                    items.push_back(item);
-                }
-            }
         }
         catch (...) {
             error = "Invalid shop response.";
@@ -1225,6 +1836,11 @@ namespace shopInstStuff {
             return true;
         };
 
+        if (inst::config::shopLegacyMode) {
+            tryLegacyFallback();
+            return sections;
+        }
+
         std::string sectionsUrl = baseUrl + "/api/shop/sections";
         FetchResult fetch = FetchShopResponse(sectionsUrl, user, pass, progressCb);
         if (fetch.responseCode == 404) {
@@ -1234,7 +1850,9 @@ namespace shopInstStuff {
 
         if (!ValidateShopResponse(fetch, error)) {
             if (!fetch.error.empty()) {
-                error = "inst.shop.unreachable"_lang;
+                error = "inst.shop.unreachable"_lang + "\n" + fetch.error;
+                if (fetch.responseCode > 0)
+                    error += "\nHTTP " + std::to_string(fetch.responseCode);
                 return sections;
             }
             if (tryLegacyFallback())
@@ -1543,6 +2161,11 @@ namespace shopInstStuff {
                                     helper.CommitLatest();
                                 } catch (...) {}
                             }
+                            // Release IPC handles immediately — no longer needed after
+                            // Register/CommitLatest. Accumulating these across all NCA
+                            // entries exhausts the kernel handle table on large XCI packages.
+                            entry.nca_writer = nullptr;
+                            entry.storage = nullptr;
                         }
                     }
 
@@ -1746,3 +2369,4 @@ namespace shopInstStuff {
         inst::util::deinitInstallServices();
     }
 }
+
